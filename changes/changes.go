@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -95,8 +96,26 @@ func (s *Set) Count() (uncommitted, branch int) {
 	return
 }
 
+// Options narrow what Compute looks at.
+type Options struct {
+	// Paths limits the set to these repo-relative files or directories
+	// (nil: the whole repo). Files, Symbols and Count then only cover them.
+	Paths []string
+	// FilesOnly lists changed files and their marks and skips symbol
+	// detail, for a tool that only marks files.
+	FilesOnly bool
+	// NoLocks keeps git status from writing a refreshed index, for loading
+	// context while another command runs that may take the index lock
+	// itself (crux). A stale index then stays stale for this run.
+	NoLocks bool
+}
+
 // Compute finds the current changes. Outside git it returns nil.
-func Compute(info *repo.Info) (*Set, error) {
+func Compute(info *repo.Info) (*Set, error) { return ComputeWith(info, Options{}) }
+
+// ComputeWith finds the current changes within the options' limits.
+// Outside git it returns nil.
+func ComputeWith(info *repo.Info, o Options) (*Set, error) {
 	if info == nil || !info.Git {
 		return nil, nil
 	}
@@ -105,10 +124,9 @@ func Compute(info *repo.Info) (*Set, error) {
 	if info.Head == "" {
 		head = emptyTree
 	}
-	if info.Branch != "" && info.DefaultRef != "" && info.Branch != info.DefaultBranch && info.Head != "" {
-		if mb, err := git(info.Root, "merge-base", "HEAD", info.DefaultRef); err == nil && mb != "" && mb != info.Head {
-			s.BranchBase = mb
-		}
+	var spec []string
+	if len(o.Paths) > 0 {
+		spec = append([]string{"--"}, o.Paths...)
 	}
 
 	// which files changed: cheap, and decides whether symbol detail fits.
@@ -119,27 +137,36 @@ func Compute(info *repo.Info) (*Set, error) {
 	// and every run re-reads every file whose stat data changed (580 ms
 	// instead of 13 ms in a 30,000-file repo). The lock is optional: if
 	// another git command holds it, status skips the write.
+	//
+	// The branch part runs alongside: the merge base, then the files the
+	// branch changed since.
 	var wg sync.WaitGroup
 	var status, branchNames string
-	var errU, errB error
+	var errU error
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		status, errU = gitRun(info.Root, true, "status", "--porcelain", "-z", "--no-renames", "--untracked-files=all", "--ignore-submodules=dirty")
+		args := append([]string{"status", "--porcelain", "-z", "--no-renames", "--untracked-files=all", "--ignore-submodules=dirty"}, spec...)
+		status, errU = gitRun(info.Root, !o.NoLocks, args...)
 	}()
-	if s.BranchBase != "" {
+	if info.Branch != "" && info.DefaultRef != "" && info.Branch != info.DefaultBranch && info.Head != "" {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			branchNames, errB = git(info.Root, "diff", "--name-only", "--no-renames", "-z", s.BranchBase, "HEAD")
+			mb, err := git(info.Root, "merge-base", "HEAD", info.DefaultRef)
+			if err != nil || mb == "" || mb == info.Head {
+				return
+			}
+			names, err := git(info.Root, append([]string{"diff", "--name-only", "--no-renames", "-z", mb, "HEAD"}, spec...)...)
+			if err != nil {
+				return // can't tell; keep the uncommitted part
+			}
+			s.BranchBase, branchNames = mb, names
 		}()
 	}
 	wg.Wait()
 	if errU != nil {
 		return nil, errU
-	}
-	if errB != nil {
-		s.BranchBase = "" // can't tell; keep the uncommitted part
 	}
 	var uncommittedFiles, untrackedFiles []string
 	for _, e := range split0(status) {
@@ -165,7 +192,7 @@ func Compute(info *repo.Info) (*Set, error) {
 		s.Files = append(s.Files, f)
 	}
 	slices.Sort(s.Files)
-	if len(s.Files) == 0 {
+	if len(s.Files) == 0 || o.FilesOnly {
 		return s, nil
 	}
 	if len(s.Files) > MaxFiles {
@@ -199,36 +226,62 @@ func Compute(info *repo.Info) (*Set, error) {
 		hunksU[f] = [][2]int{{1, 1 << 30}}
 	}
 
-	for _, f := range s.Files {
-		if !outline.Supported(f) {
-			continue
-		}
-		data, err := os.ReadFile(filepath.Join(info.Root, filepath.FromSlash(f)))
-		if err != nil {
-			continue // deleted in the working tree
-		}
-		ts := ref.Targets(f, outline.Parse(f, data, outline.MaxSize))
-		refs := ref.Refs(ts)
-		mark := map[int]string{}
-		for _, h := range hunksB[f] {
-			for _, i := range touched(ts, f, h) {
-				mark[i] = Branch
+	// changed symbols, one file per worker
+	perFile := make([][]Symbol, len(s.Files))
+	next := make(chan int)
+	for range min(runtime.GOMAXPROCS(0), len(s.Files)) {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := range next {
+				perFile[i] = fileSymbols(info.Root, s.Files[i], hunksU[s.Files[i]], hunksB[s.Files[i]])
 			}
-		}
-		for _, h := range hunksU[f] {
-			for _, i := range touched(ts, f, h) {
-				mark[i] = Uncommitted
-			}
-		}
-		for i, t := range ts {
-			if m := mark[i]; m != "" {
-				r := refs[i].String()
-				s.Symbols = append(s.Symbols, Symbol{Ref: r, Path: f, Name: t.Name, Kind: t.Kind, Line: t.Line, End: t.End, Mark: m})
-				s.marks[r] = m
-			}
+		}()
+	}
+	for i := range s.Files {
+		next <- i
+	}
+	close(next)
+	wg.Wait()
+	for _, syms := range perFile {
+		for _, sym := range syms {
+			s.Symbols = append(s.Symbols, sym)
+			s.marks[sym.Ref] = sym.Mark
 		}
 	}
 	return s, nil
+}
+
+// fileSymbols returns a file's changed symbols in file order: the innermost
+// symbol containing each changed line, Uncommitted over Branch.
+func fileSymbols(root, f string, hunksU, hunksB [][2]int) []Symbol {
+	if !outline.Supported(f) {
+		return nil
+	}
+	data, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(f)))
+	if err != nil {
+		return nil // deleted in the working tree
+	}
+	ts := ref.Targets(f, outline.Parse(f, data, outline.MaxSize))
+	refs := ref.Refs(ts)
+	mark := map[int]string{}
+	for _, h := range hunksB {
+		for _, i := range touched(ts, f, h) {
+			mark[i] = Branch
+		}
+	}
+	for _, h := range hunksU {
+		for _, i := range touched(ts, f, h) {
+			mark[i] = Uncommitted
+		}
+	}
+	var out []Symbol
+	for i, t := range ts {
+		if m := mark[i]; m != "" {
+			out = append(out, Symbol{Ref: refs[i].String(), Path: f, Name: t.Name, Kind: t.Kind, Line: t.Line, End: t.End, Mark: m})
+		}
+	}
+	return out
 }
 
 // touched returns the innermost symbols containing the lines of a hunk.

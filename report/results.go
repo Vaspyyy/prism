@@ -183,16 +183,18 @@ type CruxTests struct {
 
 // CruxItem is an error, warning or test failure.
 type CruxItem struct {
-	Kind    string     `json:"kind"` // "error", "warning", "fail"
-	Title   string     `json:"title"`
-	Loc     *Location  `json:"loc,omitempty"`
-	Test    string     `json:"test,omitempty"`    // a failure: ref of the failing test's definition
-	Pkg     string     `json:"pkg,omitempty"`     // a go test failure without a line: its package directory
-	Missing bool       `json:"missing,omitempty"` // the location's file doesn't exist from here
-	Body    []string   `json:"body,omitempty"`
-	Count   int        `json:"count,omitempty"` // occurrences folded into this one
-	Locs    []Location `json:"locs,omitempty"`  // their locations
-	Names   []string   `json:"names,omitempty"` // folded warnings: the distinct names in them
+	Kind  string    `json:"kind"` // "error", "warning", "fail"
+	Title string    `json:"title"`
+	Loc   *Location `json:"loc,omitempty"`
+	Test  string    `json:"test,omitempty"` // a failure: ref of the failing test's definition
+	// TestMarks are the context marks of the test in Test.
+	TestMarks []string   `json:"test_marks,omitempty"`
+	Pkg       string     `json:"pkg,omitempty"`     // a go test failure without a line: its package directory
+	Missing   bool       `json:"missing,omitempty"` // the location's file doesn't exist from here
+	Body      []string   `json:"body,omitempty"`
+	Count     int        `json:"count,omitempty"` // occurrences folded into this one
+	Locs      []Location `json:"locs,omitempty"`  // their locations
+	Names     []string   `json:"names,omitempty"` // folded warnings: the distinct names in them
 }
 
 // Glint is glint's result: a listing, or one file's outline.
@@ -247,5 +249,6 @@ type GlintFile struct {
 	LinkTarget string       `json:"link_target,omitempty"`
 	Git        string       `json:"git,omitempty"` // git status: "modified", "untracked", "ignored", …
 	Commit     *GlintCommit `json:"last_commit,omitempty"`
+	Marks      []string     `json:"marks,omitempty"` // context marks of the file: "changed", "branch"
 	Symbols    []Symbol     `json:"symbols"`
 }

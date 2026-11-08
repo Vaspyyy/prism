@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Vaspyyy/prism/changes"
 	"github.com/Vaspyyy/prism/focus"
 	"github.com/Vaspyyy/prism/repo"
 )
@@ -144,5 +145,52 @@ func TestRemembered(t *testing.T) {
 	s.Marks("a.go:B")
 	if !strings.HasPrefix(s.Line(), "context: focus: main...feature (recap,") {
 		t.Errorf("range line: %q", s.Line())
+	}
+}
+
+func TestPeekAndUsed(t *testing.T) {
+	_, info := newRepo(t)
+	s := Load(info, Changes, false)
+	if got := s.Peek("a.go:A"); !reflect.DeepEqual(got, []string{MarkChanged}) || !reflect.DeepEqual(s.PeekFile("a.go"), []string{MarkChanged}) {
+		t.Errorf("peek = %q", got)
+	}
+	if s.Line() != "" || len(s.Applied()) != 0 {
+		t.Errorf("peeking counted as shown: %q", s.Line())
+	}
+	// ranking by a peeked mark: the line names the layer
+	s.Use(Rank)
+	s.Used(s.Peek("a.go:A")...)
+	if s.Line() != "context: 1 changed symbol vs HEAD" || !reflect.DeepEqual(s.Applied(), []string{Rank, Mark}) {
+		t.Errorf("after Used: %q %q", s.Line(), s.Applied())
+	}
+}
+
+func TestLoadWith(t *testing.T) {
+	dir, info := newRepo(t)
+	os.WriteFile(filepath.Join(dir, "b.go"), []byte("package a\n\nfunc C() {}\n"), 0o644)
+	s := LoadWith(info, Options{Layers: Changes, Changes: changes.Options{Paths: []string{"b.go"}}})
+	if s.Peek("a.go:A") != nil || s.Peek("b.go:C") == nil || len(s.Changes.Files) != 1 {
+		t.Errorf("paths: %+v", s.Changes)
+	}
+	s = LoadWith(info, Options{Layers: Changes, Changes: changes.Options{FilesOnly: true, NoLocks: true}})
+	if s.Peek("a.go:A") != nil || s.FileMarks("a.go") == nil || s.Line() != "context: 2 changed files" {
+		t.Errorf("files only: line %q", s.Line())
+	}
+	if s := LoadWith(info, Options{Layers: Changes, Off: true}); s.Changes != nil || s.Store != nil {
+		t.Error("off")
+	}
+}
+
+func TestLongCommand(t *testing.T) {
+	_, info := newRepo(t)
+	focus.Open(info).SetLastRun("crux", focus.LastRun{Cmd: "sh -c 'go build ./...\n  && go test ./... -run '^(TestAlpha|TestBeta|TestGamma|TestDelta)$''", Exit: 2, In: []string{"a.go:B"}})
+	s := Load(info, LastRun, false)
+	s.Marks("a.go:B")
+	l := s.Line()
+	if strings.Contains(l, "\n") || !strings.Contains(l, "…") || len([]rune(l)) > 120 {
+		t.Errorf("line = %q", l)
+	}
+	if oneLine("go  test\n./...", 60) != "go test ./..." {
+		t.Error("oneLine")
 	}
 }

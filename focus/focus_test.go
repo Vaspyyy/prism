@@ -40,12 +40,15 @@ func TestRoundTrip(t *testing.T) {
 	if !f.Has("a.go:F0") || f.Has("a.go:F504") {
 		t.Error("Has")
 	}
-	if err := s.SetLastRun("crux", LastRun{Cmd: "go test ./...", Exit: 1, Tests: []string{"a_test.go:TestF"}}); err != nil {
+	if err := s.SetLastRun("crux", LastRun{Cmd: "go test ./...", Exit: 1, Tests: []string{"a_test.go:TestF", "a_test.go:TestF"}, In: []string{"a_test.go:TestF", "a.go:G"}}); err != nil {
 		t.Fatal(err)
 	}
 	r := s.LastRun()
-	if r == nil || !r.Failing("a_test.go:TestF") || r.Failing("a.go:F0") || r.In == nil {
+	if r == nil || !r.Failing("a_test.go:TestF") || r.Failing("a.go:F0") || len(r.Tests) != 1 || len(r.In) != 1 || r.In[0] != "a.go:G" {
 		t.Fatalf("last run = %+v", r)
+	}
+	if f.Name() != "commit n" || (&Focus{Range: "main...feature"}).Name() != "main...feature" || (&Focus{New: "b681ef1cccc"}).Name() != "commit b681ef1" {
+		t.Errorf("Name = %q", f.Name())
 	}
 	if _, err := os.Stat(filepath.Join(s.dir, "focus.json")); err != nil {
 		t.Error("no session: focus.json expected")

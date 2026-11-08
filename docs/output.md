@@ -24,7 +24,7 @@ These apply to all four tools, on top of each tool's own layout.
    next: crux go test -run '^TestList$' ./internal/files/   runs the 1 test that mentions List
    ```
    seek and recap already print hints like this; Prism makes them consistent and context-aware. Suggestions follow the wording rules in [evidence](evidence.md).
-5. **Budgets stay.** Context lines, marks and `next:` lines count against the tool's line budget.
+5. **Budgets stay, and context never costs a result.** Context lines, marks and `next:` lines fit inside the tool's line budget only by giving up detail (an extra hit line, a glance line, a longer excerpt), never an item that would be listed without context (a file, a symbol, an error, a failure). A tool that has no detail to give up puts its context lines on top of the budget instead. So with a tight budget, `--no-context` output can show a little more detail, never more items.
 
 ## JSON envelope
 
