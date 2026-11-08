@@ -330,9 +330,12 @@ func pytestCmd(root, cwd string, ts []ref.Target) Cmd {
 // plus its qualified name; --exact makes each filter match one test path
 // in each test binary the command builds, and the caveat says when
 // another one may hold the same path. A crate whose files don't tell the
-// paths (rustCrate.opaque) gets no command, and tests in a module no
-// target owns (tests/common/mod.rs) are left out, as are tests in example
-// or bench targets unless all are in one of them.
+// paths (rustCrate.opaque) gets no command. Left out are tests in a
+// module no target owns (tests/common/mod.rs), in a target with
+// required-features or harness = false, in a file of a target the
+// command doesn't build ([lib] test = false: a module of src/ may then be
+// in the main binary or not), and in example or bench targets unless all
+// are in one of them.
 func cargoCmd(root, cwd, crate string, ts []ref.Target) (Cmd, bool) {
 	crates := map[string]*rustCrate{}
 	load := func(dir string) *rustCrate {
@@ -358,6 +361,11 @@ func cargoCmd(root, cwd, crate string, ts []ref.Target) (Cmd, bool) {
 		manifest = rel(cwd, filepath.Join(crate, "Cargo.toml"), false)
 		args = append(args, "--manifest-path", manifest)
 	}
+	// a test in a target cargo skips without some features, or that runs its
+	// own main instead of libtest, may not run at all
+	es = slices.DeleteFunc(es, func(e rustEntry) bool {
+		return slices.ContainsFunc(e.own, func(t rustTarget) bool { f := c.flag(t); return f.features || f.noHarness })
+	})
 	var sel cargoSel
 	if len(es) > 0 && len(es[0].own) == 1 && es[0].own[0].kind != "lib" && es[0].own[0].kind != "bin" &&
 		!slices.ContainsFunc(es, func(e rustEntry) bool { return !slices.Equal(e.own, es[0].own) }) {
@@ -365,8 +373,10 @@ func cargoCmd(root, cwd, crate string, ts []ref.Target) (Cmd, bool) {
 		sel.add("--"+t.kind, t.name)
 		args = append(args, "--"+t.kind, t.name)
 	} else {
+		// every target the file may be in must be built: a module of src/
+		// may be in only one of the library and the main binary
 		es = slices.DeleteFunc(es, func(e rustEntry) bool {
-			return !slices.ContainsFunc(e.own, func(t rustTarget) bool { return sel.selects(c, t) })
+			return slices.ContainsFunc(e.own, func(t rustTarget) bool { return !sel.selects(c, t) })
 		})
 	}
 	if len(es) == 0 {

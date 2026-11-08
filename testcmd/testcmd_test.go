@@ -179,6 +179,65 @@ func TestCargo(t *testing.T) {
 	}
 }
 
+// TestCargoNotRun: For gives no command for a test that cargo test, as
+// For builds it, may not run.
+func TestCargoNotRun(t *testing.T) {
+	root := t.TempDir()
+	write(t, root, "Cargo.toml", "[package]\nname = \"p\"\n\n[features]\ncli = []\n\n"+
+		"[[bin]]\nname = \"tool\"\nrequired-features = [\"cli\"]\n\n[[test]]\nname = \"it\"\nrequired-features = [\"cli\"]\n\n"+
+		"[[test]]\nname = \"custom\"\nharness = false\n")
+	write(t, root, "src/lib.rs", rustTests("tests.lib_works"))
+	write(t, root, "src/bin/tool.rs", "fn main() {}\n"+rustTests("tests.tool_works"))
+	write(t, root, "tests/it.rs", rustTests("it_works"))
+	write(t, root, "tests/custom.rs", "fn main() {}\n"+rustTests("checks"))
+	lib := ref.Target{Path: "src/lib.rs", Name: "tests.lib_works", Kind: "fn"}
+	tool := ref.Target{Path: "src/bin/tool.rs", Name: "tests.tool_works", Kind: "fn"}
+	it := ref.Target{Path: "tests/it.rs", Name: "it_works", Kind: "fn"}
+	custom := ref.Target{Path: "tests/custom.rs", Name: "checks", Kind: "fn"}
+	// cargo skips a target without its features (or refuses --test it), and
+	// a target without libtest runs its main, not its tests
+	for _, ts := range [][]ref.Target{{tool}, {it}, {custom}, {tool, it, custom}} {
+		if cs := For(root, root, ts); len(cs) != 0 {
+			t.Errorf("For(%s): %+v", ts[0].Path, cs)
+		}
+	}
+	cs := For(root, root, []ref.Target{lib, tool, it, custom})
+	if len(cs) != 1 || cs[0].String() != "cargo test -- --exact tests::lib_works" || cs[0].Tests != 1 || cs[0].Caveat == "" {
+		t.Errorf("For, with the library's test: %+v", cs) // custom's main runs too
+	}
+	// a rerun keeps the run's features
+	rerun(t, root, root, "cargo test --features cli", []ref.Target{tool}, "cargo test --features cli -- --exact tests::tool_works")
+
+	// [lib] test = false: a module of src/ may be the library's only
+	nolib := t.TempDir()
+	write(t, nolib, "Cargo.toml", "[package]\nname = \"q\"\n\n[lib]\ntest = false\n")
+	write(t, nolib, "src/lib.rs", "pub mod parser;\n"+rustTests("root"))
+	write(t, nolib, "src/parser.rs", rustTests("tests.parses"))
+	write(t, nolib, "src/main.rs", "fn main() {}\n"+rustTests("main_works"))
+	parses := ref.Target{Path: "src/parser.rs", Name: "tests.parses", Kind: "fn"}
+	root1 := ref.Target{Path: "src/lib.rs", Name: "root", Kind: "fn"}
+	main := ref.Target{Path: "src/main.rs", Name: "main_works", Kind: "fn"}
+	if cs := For(nolib, nolib, []ref.Target{parses, root1}); len(cs) != 0 {
+		t.Errorf("For, [lib] test = false: %+v", cs)
+	}
+	if cs := For(nolib, nolib, []ref.Target{parses, main}); len(cs) != 1 || cs[0].String() != "cargo test -- --exact main_works" {
+		t.Errorf("For, the main binary's test: %+v", cs)
+	}
+
+	// a module moved by a cfg_attr wrapped over lines
+	moved := t.TempDir()
+	write(t, moved, "Cargo.toml", "[package]\nname = \"m\"\n")
+	write(t, moved, "src/lib.rs", "pub mod parser;\n")
+	write(t, moved, "src/parser.rs", "#[cfg(test)]\n#[cfg_attr(\n    all(),\n    path = \"parser_tests_long.rs\"\n)]\nmod tests;\n")
+	write(t, moved, "src/parser_tests_long.rs", rustTests("parses"))
+	mp := ref.Target{Path: "src/parser_tests_long.rs", Name: "parses", Kind: "fn"}
+	if cs := For(moved, moved, []ref.Target{mp}); len(cs) != 0 {
+		t.Errorf("For, cfg_attr path: %+v", cs)
+	}
+	rerun(t, moved, moved, "cargo test", []ref.Target{mp}, "")
+	rerunF(t, moved, moved, "cargo test", []Failed{{Target: mp, Printed: "parser::tests::parses"}}, "cargo test -- --exact parser::tests::parses")
+}
+
 func TestNext(t *testing.T) {
 	root := t.TempDir()
 	write(t, root, "go.mod", "module x\n")

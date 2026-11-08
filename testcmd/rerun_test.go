@@ -503,9 +503,13 @@ func TestRustOpaqueSrc(t *testing.T) {
 		"assert!(out.contains(\"include!(\\\"a\\\")\"));\n":    false,
 		"include!(concat!(env!(\"OUT_DIR\"), \"/gen.rs\"));\n": false,
 		"#[serde(with = \"path\")]\nfield: u8,\n":              false,
+		// cfg_attr wrapped over lines, as rustfmt does with long ones
+		"#[cfg(test)]\n#[cfg_attr(\n    all(),\n    path = \"parser_tests.rs\"\n)]\nmod tests;\n":      true,
+		"#[cfg_attr(feature = \"a)\", path = \"x.rs\")]\nmod x;\n":                                     true,
+		"#[cfg_attr(\n    feature = \"serde\",\n    derive(Serialize)\n)]\nstruct S;\nlet path = 1;\n": false,
 	} {
-		if got := rustOpaqueSrc.MatchString(src); got != want {
-			t.Errorf("rustOpaqueSrc(%q) = %v", src, got)
+		if got := rustMoves([]byte(src)); got != want {
+			t.Errorf("rustMoves(%q) = %v", src, got)
 		}
 	}
 }

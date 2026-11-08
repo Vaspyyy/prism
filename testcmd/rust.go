@@ -36,8 +36,9 @@ type rustCrate struct {
 
 // rustFlags are a target's manifest settings that change what a cargo test
 // command runs: whether the default and --tests (test) or --benches
-// (bench) select it, and whether libtest runs it (harness).
-type rustFlags struct{ test, bench, noHarness bool }
+// (bench) select it, whether libtest runs it (harness), and whether cargo
+// skips it without some features (required-features).
+type rustFlags struct{ test, bench, noHarness, features bool }
 
 // flag is a target's settings: cargo's defaults for its kind unless the
 // manifest says otherwise.
@@ -60,11 +61,42 @@ type rustFile struct {
 // rustDirs are the target kinds cargo discovers by directory.
 var rustDirs = map[string]string{"tests": "test", "examples": "example", "benches": "bench"}
 
-// rustOpaqueSrc matches what moves a module away from its file's place:
-// #[path = …] (also under cfg_attr) and include!("…"), where an item can
-// start: at the start of a line, or after ; { or }, maybe after other
-// attributes. Not in a comment, nor after a quote on the same line.
-var rustOpaqueSrc = regexp.MustCompile(`(?m)^[ \t]*(?:[^"'/\n]*[;{}][ \t]*)?(?:#!?\[[^\]\n]*\][ \t]*)*(?:#!?\[\s*(?:path\s*=|cfg_attr\s*\([^\n]*\bpath\s*=)|include\s*!\s*\(\s*r?#*")`)
+// rustItemStart finds #[path …], #[cfg_attr( and include!("…") where an
+// item can start: at the start of a line, or after ; { or }, maybe after
+// other attributes. Not in a comment, nor after a quote on the same line.
+var rustItemStart = regexp.MustCompile(`(?m)^[ \t]*(?:[^"'/\n]*[;{}][ \t]*)?(?:#!?\[[^\]\n]*\][ \t]*)*(?:#!?\[\s*(path\s*=|cfg_attr\s*\()|include\s*!\s*\(\s*r?#*")`)
+
+var rustPathKey = regexp.MustCompile(`\bpath\s*=`)
+
+// rustMoves reports whether a source moves a module away from its file's
+// place: #[path = …], a #[cfg_attr(…)] with a path = in it (over several
+// lines too, as rustfmt wraps long ones), or include!("…").
+func rustMoves(data []byte) bool {
+	for _, m := range rustItemStart.FindAllSubmatchIndex(data, -1) {
+		if m[2] < 0 || data[m[2]] == 'p' {
+			return true // include! or #[path
+		}
+		// cfg_attr( … ): its arguments, to the closing parenthesis outside strings
+		depth, end, quoted := 1, m[1], false
+		for ; end < len(data) && depth > 0; end++ {
+			switch c := data[end]; {
+			case quoted && c == '\\':
+				end++
+			case c == '"':
+				quoted = !quoted
+			case quoted:
+			case c == '(':
+				depth++
+			case c == ')':
+				depth--
+			}
+		}
+		if rustPathKey.Match(data[m[1]:end]) {
+			return true
+		}
+	}
+	return false
+}
 
 // rustAttrLine is a line whose attributes share it with an item.
 var rustAttrLine = regexp.MustCompile(`^([ \t]*)((?:#!?\[[^\]\n]*\][ \t]*)+)([^\s/#].*)$`)
@@ -132,6 +164,7 @@ func loadCrate(dir string, wanted []string) *rustCrate {
 		f.test = s.test.or(f.test)
 		f.bench = s.bench.or(f.bench)
 		f.noHarness = !s.harness.or(true)
+		f.features = s.features
 		c.flags[t] = f
 	}
 	for _, top := range []string{"src", "tests", "examples", "benches"} {
@@ -153,7 +186,7 @@ func loadCrate(dir string, wanted []string) *rustCrate {
 				return nil
 			}
 			data, ok := outline.Read(p)
-			if !ok || rustOpaqueSrc.Match(data) {
+			if !ok || rustMoves(data) {
 				c.moved = true
 				return nil
 			}
@@ -187,6 +220,7 @@ func loadCrate(dir string, wanted []string) *rustCrate {
 type cargoSection struct {
 	kind, name, path     string
 	test, bench, harness tomlBool
+	features             bool // required-features
 }
 
 // tomlBool is a manifest boolean: unset, or true or false.
@@ -207,7 +241,7 @@ func cargoManifest(data []byte) (name string, sections []cargoSection, custom bo
 	section := ""
 	kinds := map[string]string{"[lib]": "lib", "[[bin]]": "bin", "[[test]]": "test", "[[example]]": "example", "[[bench]]": "bench"}
 	// keys that don't change which tests a command runs, or where
-	inert := []string{"crate-type", "proc-macro", "doctest", "doc", "edition", "plugin", "required-features", "filename"}
+	inert := []string{"crate-type", "proc-macro", "doctest", "doc", "edition", "plugin", "filename"}
 	for _, line := range strings.Split(string(data), "\n") {
 		l := strings.TrimSpace(line)
 		if l == "" || l[0] == '#' {
@@ -247,6 +281,8 @@ func cargoManifest(data []byte) (name string, sections []cargoSection, custom bo
 				s.bench = tomlBool(value)
 			case "harness":
 				s.harness = tomlBool(value)
+			case "required-features":
+				s.features = true
 			default:
 				custom = custom || !slices.Contains(inert, key)
 			}
