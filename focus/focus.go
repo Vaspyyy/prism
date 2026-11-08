@@ -17,6 +17,8 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/Vaspyyy/prism/repo"
@@ -40,11 +42,33 @@ type Meta struct {
 // Focus is the commit or range recap last showed explicitly.
 type Focus struct {
 	Meta
-	Range   string   `json:"range"`   // as given to recap: "b681ef1", "main...feature"
-	Old     string   `json:"old"`     // full hash of the old side
+	// Range names what was shown: a commit ("b681ef1", a short hash rather
+	// than a name like HEAD that moves), or a range as given ("A..B",
+	// "main...feature"; two separate revisions are stored as "A..B").
+	Range   string   `json:"range"`
+	Old     string   `json:"old"`     // full hash of the old side (the empty tree for a root commit)
 	New     string   `json:"new"`     // full hash of the new side; Symbols are as of this commit
 	Symbols []string `json:"symbols"` // refs of the changed symbols, at most MaxSymbols
 	Total   int      `json:"total"`   // changed symbols before the cap
+}
+
+// Name is how reports name the focus: "commit b681ef1" for one commit, or
+// the range as stored.
+func (f *Focus) Name() string {
+	if f == nil {
+		return ""
+	}
+	if strings.Contains(f.Range, "..") {
+		return f.Range
+	}
+	h := f.New
+	if len(h) > 7 {
+		h = h[:7]
+	}
+	if h == "" {
+		h = f.Range
+	}
+	return "commit " + h
 }
 
 // Has reports whether a symbol ref is in the focus.
@@ -163,19 +187,32 @@ func (s *Store) SetFocus(by string, f Focus) error {
 	return s.write("focus", f)
 }
 
-// SetLastRun records crux's last run.
+// SetLastRun records crux's last run. Refs in In that are also in Tests
+// are dropped (a test failing inside itself counts once), and each list
+// keeps at most MaxSymbols refs.
 func (s *Store) SetLastRun(by string, r LastRun) error {
 	if s == nil {
 		return nil
 	}
-	if r.Tests == nil {
-		r.Tests = []string{}
-	}
-	if r.In == nil {
-		r.In = []string{}
-	}
+	r.Tests = capped(r.Tests, nil)
+	r.In = capped(r.In, r.Tests)
 	r.Meta = s.meta(by)
 	return s.write("last-run", r)
+}
+
+// capped returns refs without duplicates and without those in skip, at
+// most MaxSymbols of them, never nil.
+func capped(refs, skip []string) []string {
+	out := []string{}
+	for _, r := range refs {
+		if len(out) == MaxSymbols {
+			break
+		}
+		if !slices.Contains(out, r) && !slices.Contains(skip, r) {
+			out = append(out, r)
+		}
+	}
+	return out
 }
 
 func (s *Store) meta(by string) Meta {

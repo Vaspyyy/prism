@@ -70,18 +70,33 @@ type State struct {
 	now     func() time.Time
 }
 
+// Options say what to load.
+type Options struct {
+	Layers Layer
+	Off    bool // context is off (see Disabled): load nothing
+	// Changes narrows the Changes layer: to some paths, to files only, or
+	// without taking git's optional index lock (see changes.Options).
+	Changes changes.Options
+}
+
 // Load reads the given layers. With off (see Disabled) it loads nothing and
 // the state marks nothing, says nothing and has no Store.
 func Load(info *repo.Info, layers Layer, off bool) *State {
-	s := &State{Off: off, used: map[string]bool{}, now: time.Now}
-	if off || info == nil || !info.Git {
+	return LoadWith(info, Options{Layers: layers, Off: off})
+}
+
+// LoadWith is Load with options.
+func LoadWith(info *repo.Info, o Options) *State {
+	s := &State{Off: o.Off, used: map[string]bool{}, now: time.Now}
+	if o.Off || info == nil || !info.Git {
 		return s
 	}
-	s.layers = layers
+	s.layers = o.Layers
 	s.Store = focus.Open(info)
-	if layers&Changes != 0 {
-		s.Changes, _ = changes.Compute(info)
+	if o.Layers&Changes != 0 {
+		s.Changes, _ = changes.ComputeWith(info, o.Changes)
 	}
+	layers := o.Layers
 	if layers&Focus != 0 {
 		s.Focus = s.Store.Focus()
 	}
@@ -92,8 +107,17 @@ func Load(info *repo.Info, layers Layer, off bool) *State {
 }
 
 // Marks returns a symbol's marks, in a fixed order: changed or branch,
-// focus, failing. A mark handed out here counts as context used.
+// focus, failing. A mark handed out here counts as shown: the context:
+// line names its layer. To look without that (for ranking, or before
+// deciding what to print), use Peek, then Used for what was printed.
 func (s *State) Marks(ref string) []string {
+	out := s.Peek(ref)
+	s.Used(out...)
+	return out
+}
+
+// Peek returns a symbol's marks like Marks, without counting them as shown.
+func (s *State) Peek(ref string) []string {
 	if s == nil || s.Off {
 		return nil
 	}
@@ -107,22 +131,37 @@ func (s *State) Marks(ref string) []string {
 	if s.LastRun.Failing(ref) {
 		out = append(out, MarkFailing)
 	}
-	for _, m := range out {
-		s.used[m] = true
-	}
 	return out
 }
 
-// FileMarks returns a file's marks: changed or branch.
+// FileMarks returns a file's marks (changed or branch) and counts them as
+// shown.
 func (s *State) FileMarks(path string) []string {
+	out := s.PeekFile(path)
+	s.Used(out...)
+	return out
+}
+
+// PeekFile returns a file's marks without counting them as shown.
+func (s *State) PeekFile(path string) []string {
 	if s == nil || s.Off {
 		return nil
 	}
 	if m := s.Changes.FileMark(path); m != "" {
-		s.used[m] = true
 		return []string{m}
 	}
 	return nil
+}
+
+// Used counts marks as shown, or as the reason results were reordered:
+// the context: line then names their layers. Marks and FileMarks call it.
+func (s *State) Used(marks ...string) {
+	if s == nil || s.Off {
+		return
+	}
+	for _, m := range marks {
+		s.used[m] = true
+	}
 }
 
 // Suffix formats marks as printed after a name: " [changed] [focus]", or
@@ -185,14 +224,14 @@ func (s *State) Line() string {
 	if len(s.Applied()) == 0 && len(parts) == 0 && len(s.notes) == 0 {
 		return ""
 	}
-	if s.used[MarkChanged] || s.used[MarkBranch] {
+	if (s.used[MarkChanged] || s.used[MarkBranch]) && s.Changes != nil {
 		parts = append(parts, s.changesPart())
 	}
-	if s.used[MarkFocus] {
-		parts = append(parts, "focus: "+s.focusName()+" ("+s.Focus.By+", "+s.ago(s.Focus.At)+")")
+	if s.used[MarkFocus] && s.Focus != nil {
+		parts = append(parts, "focus: "+s.Focus.Name()+" ("+s.Focus.By+", "+s.ago(s.Focus.At)+")")
 	}
-	if s.used[MarkFailing] {
-		parts = append(parts, "last run: "+s.LastRun.By+" "+s.LastRun.Cmd+" "+outcome(s.LastRun.Exit)+" ("+s.ago(s.LastRun.At)+")")
+	if s.used[MarkFailing] && s.LastRun != nil {
+		parts = append(parts, "last run: "+s.LastRun.By+" "+oneLine(s.LastRun.Cmd, 60)+" "+outcome(s.LastRun.Exit)+" ("+s.ago(s.LastRun.At)+")")
 	}
 	parts = append(parts, s.notes...)
 	if len(parts) == 0 {
@@ -214,15 +253,6 @@ func (s *State) changesPart() string {
 		return plural(len(s.Changes.Files), "changed file")
 	}
 	return strings.Join(p, ", ")
-}
-
-// focusName is how the focus is named in the context: line: "commit
-// b681ef1" for one commit, or the range as recap was given it.
-func (s *State) focusName() string {
-	if strings.Contains(s.Focus.Range, "..") {
-		return s.Focus.Range
-	}
-	return "commit " + short(s.Focus.New)
 }
 
 func (s *State) ago(t time.Time) string {
@@ -254,6 +284,16 @@ func (s *State) Context() *report.Context {
 		c.LastRun = &report.ContextLastRun{Cmd: r.Cmd, Exit: r.Exit, Failing: len(r.Tests) + len(r.In), By: r.By, At: r.At.Format(time.RFC3339)}
 	}
 	return c
+}
+
+// oneLine is a command on one line: whitespace runs (newlines in an sh -c
+// script) become one space, and it's cut to n characters with "…".
+func oneLine(cmd string, n int) string {
+	cmd = strings.Join(strings.Fields(cmd), " ")
+	if r := []rune(cmd); len(r) > n {
+		return string(r[:n-1]) + "…"
+	}
+	return cmd
 }
 
 func outcome(exit int) string {

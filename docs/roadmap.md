@@ -101,6 +101,8 @@ Things the work so far turned up that belong to a later step:
 - **report** gaps left after Phase 2: a moved definition in a new file can't say its signature changed (`RecapDef` has no `old_sig`), and `last_commit.commits` in glint is 1 unless `-H` asked for the count (it should be left out instead). seek passes a file kind `long lines` that the docs don't list.
 - **glint**: `-A -M` orders children of equal size differently between runs, and files over 4 MiB show 0 lines (line counting stops at that size).
 - **glint** had a data race in directory listing that CI's race detector caught (fixed in glint#5).
+- **changes vs seek**: seek leaves out definitions that outline finds inside docstrings and template strings; `prism/changes` keeps them. Ordinals (`#N`) can then differ between the two and a mark is missed. Rare; the fix is one shared filter in outline.
+- **crux** has no "rerun only the failed tests" suggestion: `testcmd` would drop the original command's flags (`-tags`, `-race`). It needs a way to carry them over.
 
 ## Decisions taken
 
@@ -120,6 +122,8 @@ Each can be revisited; the reason is noted so it's clear what would change it.
 
 - **Expiry time.** 60 minutes is a guess. Revisit after a week of real use.
 - **Session variables for other harnesses** (Codex, opencode). Add each one once it's seen on a real run.
+- **One last run per worktree and session.** A passing `crux go vet` replaces the record of a failed `crux go test`, so the `[failing]` marks go away although the tests weren't rerun. That's the spec as written; keeping one record per command kind may be better.
+- **What the `context:` line counts.** It counts every changed symbol in the repo ("68 changed symbols vs HEAD") even when the report shows one of them, or is a map of files. Counting only what's shown may read better.
 
 ## Non-goals
 

@@ -217,3 +217,45 @@ func TestNewSide(t *testing.T) {
 		t.Errorf("unquote = %q", got)
 	}
 }
+
+func TestOptions(t *testing.T) {
+	dir := newRepo(t)
+	run(t, dir, "checkout", "-q", "-b", "feature")
+	write(t, dir, "README.md", "# Shop\n\n## Usage\n\nRun it twice.\n")
+	run(t, dir, "commit", "-q", "-am", "readme")
+	write(t, dir, "shop/shop.go", strings.Replace(shop, "x := 1", "x := 9", 1))
+	write(t, dir, "shop/new.go", "package shop\n\nfunc New() {}\n")
+	info, err := repo.Detect(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	with := func(o Options) *Set {
+		t.Helper()
+		s, err := ComputeWith(info, o)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return s
+	}
+	// a path limits files, symbols and the branch part
+	s := with(Options{Paths: []string{"shop/shop.go"}})
+	if !reflect.DeepEqual(s.Files, []string{"shop/shop.go"}) || !reflect.DeepEqual(refs(s), []string{"shop/shop.go:Repo.Open changed"}) {
+		t.Errorf("one path: files %q, symbols %q", s.Files, refs(s))
+	}
+	if s := with(Options{Paths: []string{"shop"}}); !reflect.DeepEqual(s.Files, []string{"shop/new.go", "shop/shop.go"}) {
+		t.Errorf("a directory: %q", s.Files)
+	}
+	if s := with(Options{Paths: []string{"README.md"}}); s.FileMark("README.md") != Branch || s.BranchBase == "" || len(s.Files) != 1 {
+		t.Errorf("branch file under a path: %+v", s)
+	}
+	// files only: marks for files, no symbols
+	s = with(Options{FilesOnly: true, NoLocks: true})
+	if len(s.Symbols) != 0 || s.FileMark("README.md") != Branch || s.FileMark("shop/new.go") != Uncommitted || len(s.Files) != 3 {
+		t.Errorf("files only: files %q, symbols %q", s.Files, refs(s))
+	}
+	// the whole set, for comparison
+	want := []string{"README.md:Usage branch", "shop/new.go:New changed", "shop/shop.go:Repo.Open changed"}
+	if got := refs(with(Options{})); !reflect.DeepEqual(got, want) {
+		t.Errorf("all: %q, want %q", got, want)
+	}
+}
