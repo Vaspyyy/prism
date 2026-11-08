@@ -387,6 +387,129 @@ func TestRerunCargoTargets(t *testing.T) {
 	}
 }
 
+// TestRerunCargoSelection: which targets each selection builds is
+// cargo's: --benches builds the library and binaries too, and the
+// manifest's test, bench and harness settings count.
+func TestRerunCargoSelection(t *testing.T) {
+	root := t.TempDir()
+	write(t, root, "Cargo.toml", "[package]\nname = \"p\"\n")
+	write(t, root, "src/lib.rs", rustTests("works"))
+	write(t, root, "benches/b.rs", rustTests("works", "bench_only"))
+	write(t, root, "examples/e.rs", "fn main() {}\n"+rustTests("works"))
+	lib := ref.Target{Path: "src/lib.rs", Name: "works", Kind: "fn"}
+	bench := ref.Target{Path: "benches/b.rs", Name: "works", Kind: "fn"}
+	benchOnly := ref.Target{Path: "benches/b.rs", Name: "bench_only", Kind: "fn"}
+	for _, c := range []struct {
+		argv   string
+		failed ref.Target
+		caveat bool // "": no command
+	}{
+		{"cargo test --benches", bench, true}, // the library's works runs too
+		{"cargo test --benches", lib, true},   // the library is built with --benches
+		{"cargo test --benches", benchOnly, false},
+		{"cargo test --bench b", bench, false},
+		{"cargo test --examples", lib, false}, // no command: --examples builds examples only
+		{"cargo test --example e", lib, false},
+		{"cargo test --all-targets", bench, true},
+		{"cargo test", lib, false}, // benches and examples aren't tested by default
+	} {
+		want := c.argv + " -- --exact works"
+		if c.failed == benchOnly {
+			want = c.argv + " -- --exact bench_only"
+		}
+		if strings.Contains(c.argv, "example") {
+			want = ""
+		}
+		if cmd := rerun(t, root, root, c.argv, []ref.Target{c.failed}, want); want != "" && (cmd.Caveat != "") != c.caveat {
+			t.Errorf("%s, %s: caveat %q", c.argv, c.failed.Path, cmd.Caveat)
+		}
+	}
+
+	// the manifest's settings: what --benches and the default select, and
+	// a target without libtest, which runs what it likes
+	write(t, root, "Cargo.toml", "[package]\nname = \"p\"\n\n[lib]\nbench = false\n\n[[example]]\nname = \"e\"\ntest = true\n")
+	if c := rerun(t, root, root, "cargo test --benches", []ref.Target{bench}, "cargo test --benches -- --exact works"); c.Caveat != "" {
+		t.Errorf("[lib] bench = false: caveat %q", c.Caveat)
+	}
+	if c := rerun(t, root, root, "cargo test", []ref.Target{lib}, "cargo test -- --exact works"); c.Caveat == "" {
+		t.Error("example e with test = true: its works runs too, unsaid")
+	}
+	write(t, root, "Cargo.toml", "[package]\nname = \"p\"\n\n[[bench]]\nname = \"b\"\nharness = false\n")
+	write(t, root, "benches/b.rs", "fn main() {}\n") // no works of its own: its main decides
+	if c := rerun(t, root, root, "cargo test --benches", []ref.Target{lib}, "cargo test --benches -- --exact works"); c.Caveat == "" {
+		t.Error("bench b without libtest: no caveat")
+	}
+	if cs := For(root, root, []ref.Target{lib}); len(cs) != 1 || cs[0].Caveat != "" {
+		t.Errorf("For, a bench without libtest (not built by default): %+v", cs)
+	}
+	write(t, root, "Cargo.toml", "[package]\nname = \"p\"\n\n[lib]\ntest = false\n")
+	rerun(t, root, root, "cargo test", []ref.Target{lib}, "")
+	if cs := For(root, root, []ref.Target{lib}); len(cs) != 0 {
+		t.Errorf("For, [lib] test = false: %+v", cs)
+	}
+
+	// a [[bin]] at src/main.rs, under its own name
+	write(t, root, "Cargo.toml", "[package]\nname = \"p\"\n\n[[bin]]\nname = \"tool\"\npath = \"src/main.rs\"\n")
+	write(t, root, "src/main.rs", "fn main() {}\n"+rustTests("main_works"))
+	main := ref.Target{Path: "src/main.rs", Name: "main_works", Kind: "fn"}
+	rerun(t, root, root, "cargo test --bin tool", []ref.Target{main}, "cargo test --bin tool -- --exact main_works")
+	rerun(t, root, root, "cargo test --bin p", []ref.Target{main}, "")
+	if cs := For(root, root, []ref.Target{main}); len(cs) != 1 {
+		t.Errorf("For, [[bin]] path = src/main.rs: %+v", cs)
+	}
+	for _, m := range []string{"[lib]\npath = \"src/lib.rs\"\n", "[[bench]]\nname = \"b\"\npath = \"benches/b.rs\"\n"} {
+		write(t, root, "Cargo.toml", "[package]\nname = \"p\"\n\n"+m)
+		if cs := For(root, root, []ref.Target{lib}); len(cs) != 1 {
+			t.Errorf("For, %q (the path cargo finds anyway): %+v", m, cs)
+		}
+	}
+	write(t, root, "Cargo.toml", "[package]\nname = \"p\"\n\n[[bench]]\nname = \"b\"\npath = \"perf/b.rs\"\n")
+	if cs := For(root, root, []ref.Target{lib}); len(cs) != 0 {
+		t.Errorf("For, a bench elsewhere: %+v", cs)
+	}
+}
+
+// TestRerunCargoOneLine: a test whose attributes share its line (or its
+// module's) is still found in another package.
+func TestRerunCargoOneLine(t *testing.T) {
+	root := t.TempDir()
+	write(t, root, "Cargo.toml", "[workspace]\nmembers = [\"a\", \"b\"]\n")
+	write(t, root, "a/Cargo.toml", "[package]\nname = \"a\"\n")
+	write(t, root, "a/src/lib.rs", rustTests("tests.parses"))
+	write(t, root, "b/Cargo.toml", "[package]\nname = \"b\"\n")
+	write(t, root, "b/src/lib.rs", "#[cfg(test)] mod tests {\n    #[test] fn parses() {}\n}\n")
+	parses := []ref.Target{{Path: "a/src/lib.rs", Name: "tests.parses", Kind: "fn"}}
+	if c := rerun(t, root, root, "cargo test --workspace", parses, "cargo test --workspace -- --exact tests::parses"); c.Caveat == "" {
+		t.Error("b's one-line tests::parses runs too, unsaid")
+	}
+	// --exclude leaves a package out
+	if c := rerun(t, root, root, "cargo test --workspace --exclude b", parses, "cargo test --workspace --exclude b -- --exact tests::parses"); c.Caveat != "" {
+		t.Errorf("--exclude b: caveat %q", c.Caveat)
+	}
+	rerun(t, root, root, "cargo test --workspace --exclude a", parses, "")
+}
+
+func TestRustOpaqueSrc(t *testing.T) {
+	for src, want := range map[string]bool{
+		"#[path = \"imp.rs\"]\nmod imp;\n":                     true,
+		"    #[cfg(unix)] #[path = \"unix.rs\"] mod sys;\n":    true,
+		"#[cfg_attr(unix, path = \"unix.rs\")]\nmod sys;\n":    true,
+		"mod a; #[path = \"b.rs\"] mod b;\n":                   true,
+		"mod gen { include!(\"gen.rs\"); }\n":                  true,
+		"include!(r\"gen.rs\");\n":                             true,
+		"// see #[path = \"x.rs\"]\n":                          false,
+		"/// include!(\"x.rs\")\n":                             false,
+		"let s = \"#[path = \\\"x.rs\\\"]\";\n":                false,
+		"assert!(out.contains(\"include!(\\\"a\\\")\"));\n":    false,
+		"include!(concat!(env!(\"OUT_DIR\"), \"/gen.rs\"));\n": false,
+		"#[serde(with = \"path\")]\nfield: u8,\n":              false,
+	} {
+		if got := rustOpaqueSrc.MatchString(src); got != want {
+			t.Errorf("rustOpaqueSrc(%q) = %v", src, got)
+		}
+	}
+}
+
 // TestRerunCargoPrinted: where the files don't tell a test's path, only
 // the path cargo printed can rerun it.
 func TestRerunCargoPrinted(t *testing.T) {

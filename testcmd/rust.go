@@ -25,11 +25,27 @@ type rustTarget struct{ kind, name string } // kind: lib, bin, test, example, be
 // rustCrate is what a Cargo package's files tell about its tests.
 type rustCrate struct {
 	dir     string
-	name    string // [package] name, the main binary's name
-	custom  bool   // targets aren't (only) cargo's discovery, or the manifest can't be read
+	name    string // [package] name
+	main    string // the name of the binary in src/main.rs: the package's, unless a [[bin]] renames it
+	custom  bool   // targets aren't cargo's discovery, or the manifest can't be read
 	moved   bool   // a source moves modules away from their files' places, or can't be read
 	targets []rustTarget
+	flags   map[rustTarget]rustFlags
 	files   map[string]rustFile // crate-relative path → file, for files that may hold wanted tests
+}
+
+// rustFlags are a target's manifest settings that change what a cargo test
+// command runs: whether the default and --tests (test) or --benches
+// (bench) select it, and whether libtest runs it (harness).
+type rustFlags struct{ test, bench, noHarness bool }
+
+// flag is a target's settings: cargo's defaults for its kind unless the
+// manifest says otherwise.
+func (c *rustCrate) flag(t rustTarget) rustFlags {
+	if f, ok := c.flags[t]; ok {
+		return f
+	}
+	return rustFlags{test: t.kind != "example" && t.kind != "bench", bench: t.kind != "example" && t.kind != "test"}
 }
 
 // rustFile is a source file's place: the targets it's built into (own,
@@ -45,8 +61,29 @@ type rustFile struct {
 var rustDirs = map[string]string{"tests": "test", "examples": "example", "benches": "bench"}
 
 // rustOpaqueSrc matches what moves a module away from its file's place:
-// #[path = …] (also under cfg_attr) and include!("…").
-var rustOpaqueSrc = regexp.MustCompile(`#!?\[\s*(?:path\s*=|cfg_attr\s*\([^\n]*\bpath\s*=)|\binclude\s*!\s*\(\s*r?#*"`)
+// #[path = …] (also under cfg_attr) and include!("…"), where an item can
+// start: at the start of a line, or after ; { or }, maybe after other
+// attributes. Not in a comment, nor after a quote on the same line.
+var rustOpaqueSrc = regexp.MustCompile(`(?m)^[ \t]*(?:[^"'/\n]*[;{}][ \t]*)?(?:#!?\[[^\]\n]*\][ \t]*)*(?:#!?\[\s*(?:path\s*=|cfg_attr\s*\([^\n]*\bpath\s*=)|include\s*!\s*\(\s*r?#*")`)
+
+// rustAttrLine is a line whose attributes share it with an item.
+var rustAttrLine = regexp.MustCompile(`^([ \t]*)((?:#!?\[[^\]\n]*\][ \t]*)+)([^\s/#].*)$`)
+
+// rustSplitAttrs puts attributes that share a line with an item
+// ("#[test] fn x() {}", "#[cfg(test)] mod tests {") on a line of their
+// own, as rustfmt would, so the outline lists the item.
+func rustSplitAttrs(data []byte) []byte {
+	lines := strings.Split(string(data), "\n")
+	out := make([]string, 0, len(lines))
+	for _, l := range lines {
+		if m := rustAttrLine.FindStringSubmatch(l); m != nil {
+			out = append(out, m[1]+strings.TrimSpace(m[2]), m[1]+m[3])
+		} else {
+			out = append(out, l)
+		}
+	}
+	return []byte(strings.Join(out, "\n"))
+}
 
 // loadCrate reads a package: its manifest, its targets as cargo discovers
 // them, and its sources. Only files mentioning one of wanted (test names'
@@ -58,12 +95,19 @@ func loadCrate(dir string, wanted []string) *rustCrate {
 		c.custom = true
 		return c
 	}
-	c.name, c.custom = cargoManifest(manifest)
+	var sections []cargoSection
+	c.name, sections, c.custom = cargoManifest(manifest)
+	c.main = c.name
+	for _, s := range sections {
+		if s.kind == "bin" && path.Clean(s.path) == "src/main.rs" {
+			c.main = s.name
+		}
+	}
 	if exists(filepath.Join(dir, "src", "lib.rs")) {
 		c.targets = append(c.targets, rustTarget{"lib", c.name})
 	}
 	if exists(filepath.Join(dir, "src", "main.rs")) {
-		c.targets = append(c.targets, rustTarget{"bin", c.name})
+		c.targets = append(c.targets, rustTarget{"bin", c.main})
 	}
 	for _, d := range [][2]string{{"src/bin", "bin"}, {"tests", "test"}, {"examples", "example"}, {"benches", "bench"}} {
 		entries, _ := os.ReadDir(filepath.Join(dir, filepath.FromSlash(d[0])))
@@ -76,6 +120,19 @@ func loadCrate(dir string, wanted []string) *rustCrate {
 				c.targets = append(c.targets, rustTarget{d[1], n})
 			}
 		}
+	}
+	c.flags = map[rustTarget]rustFlags{}
+	for _, s := range sections {
+		t, ok := c.declared(s)
+		if !ok {
+			c.custom = true
+			continue
+		}
+		f := c.flag(t)
+		f.test = s.test.or(f.test)
+		f.bench = s.bench.or(f.bench)
+		f.noHarness = !s.harness.or(true)
+		c.flags[t] = f
 	}
 	for _, top := range []string{"src", "tests", "examples", "benches"} {
 		filepath.WalkDir(filepath.Join(dir, top), func(p string, e fs.DirEntry, err error) error {
@@ -111,6 +168,7 @@ func loadCrate(dir string, wanted []string) *rustCrate {
 			} else if !known {
 				f.kind = rustDirs[strings.SplitN(r, "/", 2)[0]]
 			}
+			data = rustSplitAttrs(data)
 			syms := outline.Parse(filepath.Base(p), data, outline.MaxSize)
 			for _, t := range ref.Targets(r, syms) {
 				if IsTest(t, data) {
@@ -124,12 +182,32 @@ func loadCrate(dir string, wanted []string) *rustCrate {
 	return c
 }
 
-// cargoManifest reads a Cargo.toml for the package name, and whether a
-// target is set up other than by discovery: a [lib], [[bin]], [[test]],
-// [[example]] or [[bench]] with a path, harness, test or
-// required-features key, an inline target array, or an auto* key.
-func cargoManifest(data []byte) (name string, custom bool) {
+// cargoSection is a target the manifest sets up: [lib], [[bin]], [[test]],
+// [[example]] or [[bench]].
+type cargoSection struct {
+	kind, name, path     string
+	test, bench, harness tomlBool
+}
+
+// tomlBool is a manifest boolean: unset, or true or false.
+type tomlBool string
+
+func (b tomlBool) or(def bool) bool {
+	if b == "" {
+		return def
+	}
+	return b == "true"
+}
+
+// cargoManifest reads a Cargo.toml for the package name and the targets
+// it sets up. custom is true where targets aren't cargo's discovery as
+// read here: an inline target array, an auto* key, a target key it
+// doesn't know the effect of, or no name.
+func cargoManifest(data []byte) (name string, sections []cargoSection, custom bool) {
 	section := ""
+	kinds := map[string]string{"[lib]": "lib", "[[bin]]": "bin", "[[test]]": "test", "[[example]]": "example", "[[bench]]": "bench"}
+	// keys that don't change which tests a command runs, or where
+	inert := []string{"crate-type", "proc-macro", "doctest", "doc", "edition", "plugin", "required-features", "filename"}
 	for _, line := range strings.Split(string(data), "\n") {
 		l := strings.TrimSpace(line)
 		if l == "" || l[0] == '#' {
@@ -137,6 +215,9 @@ func cargoManifest(data []byte) (name string, custom bool) {
 		}
 		if l[0] == '[' {
 			section = strings.Join(strings.Fields(strings.SplitN(l, "#", 2)[0]), "")
+			if kinds[section] != "" {
+				sections = append(sections, cargoSection{kind: kinds[section]})
+			}
 			continue
 		}
 		key, value, ok := strings.Cut(l, "=")
@@ -144,19 +225,56 @@ func cargoManifest(data []byte) (name string, custom bool) {
 			continue
 		}
 		key = strings.Trim(strings.TrimSpace(key), `"'`)
-		switch section {
-		case "":
+		value = strings.Trim(strings.TrimSpace(strings.SplitN(value, "#", 2)[0]), `"'`)
+		switch kind := kinds[section]; {
+		case section == "":
 			custom = custom || slices.Contains([]string{"lib", "bin", "test", "example", "bench"}, strings.SplitN(key, ".", 2)[0])
-		case "[package]":
+		case section == "[package]":
 			if key == "name" {
-				name = strings.Trim(strings.TrimSpace(strings.SplitN(value, "#", 2)[0]), `"'`)
+				name = value
 			}
 			custom = custom || strings.HasPrefix(key, "auto")
-		case "[lib]", "[[bin]]", "[[test]]", "[[example]]", "[[bench]]":
-			custom = custom || slices.Contains([]string{"path", "harness", "test", "required-features"}, key)
+		case kind != "":
+			s := &sections[len(sections)-1]
+			switch key {
+			case "name":
+				s.name = value
+			case "path":
+				s.path = value
+			case "test":
+				s.test = tomlBool(value)
+			case "bench":
+				s.bench = tomlBool(value)
+			case "harness":
+				s.harness = tomlBool(value)
+			default:
+				custom = custom || !slices.Contains(inert, key)
+			}
 		}
 	}
-	return name, custom || name == ""
+	return name, sections, custom || name == ""
+}
+
+// declared is the discovered target a manifest section sets up. ok is
+// false for one whose path isn't where cargo would look for it (a [[bin]]
+// may name src/main.rs whatever its name).
+func (c *rustCrate) declared(s cargoSection) (rustTarget, bool) {
+	if s.kind == "lib" {
+		return rustTarget{"lib", c.name}, s.path == "" || path.Clean(s.path) == "src/lib.rs"
+	}
+	if s.name == "" {
+		return rustTarget{}, false
+	}
+	t := rustTarget{s.kind, s.name}
+	if s.path == "" {
+		return t, true
+	}
+	p := path.Clean(s.path)
+	if s.kind == "bin" && p == "src/main.rs" {
+		return t, true
+	}
+	dir := map[string]string{"bin": "src/bin", "test": "tests", "example": "examples", "bench": "benches"}[s.kind]
+	return t, p == dir+"/"+s.name+".rs" || p == dir+"/"+s.name+"/main.rs"
 }
 
 // opaque reports whether test paths or targets don't follow from the
@@ -189,10 +307,10 @@ func (c *rustCrate) place(r string) (mod string, own []rustTarget, known bool) {
 		case len(rest) == 1 && rest[0] == "lib":
 			return "", []rustTarget{{"lib", c.name}}, true
 		case len(rest) == 1 && rest[0] == "main":
-			return "", []rustTarget{{"bin", c.name}}, true
+			return "", []rustTarget{{"bin", c.main}}, true
 		}
 		for _, t := range c.targets {
-			if t.kind == "lib" || t == (rustTarget{"bin", c.name}) {
+			if t.kind == "lib" || t == (rustTarget{"bin", c.main}) && exists(filepath.Join(c.dir, "src", "main.rs")) {
 				own = append(own, t)
 			}
 		}
@@ -248,40 +366,40 @@ func lastSegments(ts []ref.Target) []string {
 }
 
 // cargoSel is the targets a cargo test command selects in each package
-// it builds: by default the library, binaries and integration tests.
+// it builds: by default those with test = true (the library, binaries and
+// integration tests, unless the manifest says otherwise).
 type cargoSel struct {
-	given bool                // a target option was given: only what they name
-	kinds map[string]bool     // whole kinds: --lib, --bins, --tests …
-	named map[string][]string // --bin x, --test x … (names or globs)
+	given bool            // a target option was given: only what they name
+	opts  map[string]bool // --lib, --bins, --tests (test = true), --benches (bench = true), --examples
+	named map[string][]string
 }
 
 func (s *cargoSel) add(opt, value string) {
-	if s.kinds == nil {
-		s.kinds, s.named = map[string]bool{}, map[string][]string{}
-	}
-	kinds := map[string][]string{
-		"--lib": {"lib"}, "--bins": {"bin"}, "--examples": {"example"}, "--benches": {"bench"},
-		"--tests":       {"lib", "bin", "test"}, // targets with test = true; others make the crate opaque
-		"--all-targets": {"lib", "bin", "test", "example", "bench"},
+	if s.opts == nil {
+		s.opts, s.named = map[string]bool{}, map[string][]string{}
 	}
 	single := map[string]string{"--bin": "bin", "--test": "test", "--example": "example", "--bench": "bench"}
-	switch {
-	case kinds[opt] != nil:
+	switch opt {
+	case "--lib", "--bins", "--tests", "--benches", "--examples":
+		s.given, s.opts[opt] = true, true
+	case "--all-targets":
 		s.given = true
-		for _, k := range kinds[opt] {
-			s.kinds[k] = true
+		for _, o := range []string{"--lib", "--bins", "--tests", "--benches", "--examples"} {
+			s.opts[o] = true
 		}
-	case single[opt] != "":
+	case "--bin", "--test", "--example", "--bench":
 		s.given = true
 		s.named[single[opt]] = append(s.named[single[opt]], value)
 	}
 }
 
-func (s cargoSel) selects(t rustTarget) bool {
+func (s cargoSel) selects(c *rustCrate, t rustTarget) bool {
+	f := c.flag(t)
 	if !s.given {
-		return t.kind == "lib" || t.kind == "bin" || t.kind == "test"
+		return f.test
 	}
-	if s.kinds[t.kind] {
+	if s.opts["--lib"] && t.kind == "lib" || s.opts["--bins"] && t.kind == "bin" || s.opts["--examples"] && t.kind == "example" ||
+		s.opts["--tests"] && f.test || s.opts["--benches"] && f.bench {
 		return true
 	}
 	for _, n := range s.named[t.kind] {
@@ -311,14 +429,16 @@ type rustEntry struct {
 // src/, and may both include a file), and in any other selected target
 // or package that holds a test with that path. A package whose sources
 // move modules may hold any path in its targets, one with custom targets
-// anything anywhere; an entry whose target isn't known may be in any.
+// anything anywhere, and a target without libtest decides itself what
+// runs; an entry whose target isn't known may be in any.
 func rustCaveat(scope []*rustCrate, sel cargoSel, es []rustEntry) (caveat, ok bool) {
 	selected := 0
 	for _, c := range scope {
 		caveat = caveat || c.custom
 		for _, t := range c.targets {
-			if sel.selects(t) {
+			if sel.selects(c, t) {
 				selected++
+				caveat = caveat || c.flag(t).noHarness
 			}
 		}
 	}
@@ -332,7 +452,7 @@ func rustCaveat(scope []*rustCrate, sel cargoSel, es []rustEntry) (caveat, ok bo
 		}
 		own := 0
 		for _, t := range e.own {
-			if sel.selects(t) {
+			if sel.selects(e.crate, t) {
 				own++
 			}
 		}
@@ -342,7 +462,7 @@ func rustCaveat(scope []*rustCrate, sel cargoSel, es []rustEntry) (caveat, ok bo
 		caveat = caveat || own > 1
 		for _, c := range scope {
 			for _, t := range c.targets {
-				if sel.selects(t) && !rustRerun(es, c, t, e.path) && (c.moved || c.has(t, e.path)) {
+				if sel.selects(c, t) && !rustRerun(es, c, t, e.path) && (c.moved || c.has(t, e.path)) {
 					caveat = true
 				}
 			}
@@ -361,10 +481,11 @@ func rustRerun(es []rustEntry, c *rustCrate, t rustTarget, p string) bool {
 // cargoScope lists the packages a cargo test command builds, from where
 // it runs: the package of its manifest (--manifest-path, else the nearest
 // Cargo.toml up from cwd), or with -p, --workspace, a virtual manifest or
-// default-members, every package under the workspace root (more than it
-// may build: globs, default-members and --exclude aren't read). With one
-// -p name, the loaded package of that name. load reads a package once.
-func cargoScope(root, cwd string, pkgs []string, workspace bool, manifest string, load func(string) *rustCrate) ([]*rustCrate, bool) {
+// default-members, every package under the workspace root but those
+// --exclude names (more than it may build: members, globs in -p and
+// default-members aren't read). With one -p name, the loaded package of
+// that name. load reads a package once.
+func cargoScope(root, cwd string, pkgs, exclude []string, workspace bool, manifest string, load func(string) *rustCrate) ([]*rustCrate, bool) {
 	dir := ""
 	if manifest != "" {
 		if !filepath.IsAbs(manifest) {
@@ -389,7 +510,7 @@ func cargoScope(root, cwd string, pkgs []string, workspace bool, manifest string
 		}
 		for _, d := range cargoPackages(ws) {
 			if m, ok := outline.Read(filepath.Join(d, "Cargo.toml")); ok {
-				if name, _ := cargoManifest(m); name == pkgs[0] {
+				if name, _, _ := cargoManifest(m); name == pkgs[0] {
 					return []*rustCrate{load(d)}, true
 				}
 			}
@@ -406,7 +527,10 @@ func cargoScope(root, cwd string, pkgs []string, workspace bool, manifest string
 	}
 	var out []*rustCrate
 	for _, d := range cargoPackages(ws) {
-		out = append(out, load(d))
+		c := load(d)
+		if !slices.ContainsFunc(exclude, func(x string) bool { m, err := path.Match(x, c.name); return x == c.name || err == nil && m }) {
+			out = append(out, c)
+		}
 	}
 	return out, len(out) > 0
 }

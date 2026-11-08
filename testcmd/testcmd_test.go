@@ -44,6 +44,12 @@ func TestIsTest(t *testing.T) {
 		{ref.Target{Path: "src/lib.rs", Name: "tests.helper", Kind: "fn", Line: 10}, rs, false},
 		{ref.Target{Path: "src/lib.rs", Name: "tests.helper", Kind: "fn", Line: 10}, nil, true}, // no source: module heuristic
 		{ref.Target{Path: "src/lib.rs", Name: "parse", Kind: "fn", Line: 1}, nil, false},
+		// attributes on the function's own line, and several on one line
+		{ref.Target{Path: "src/lib.rs", Name: "a", Kind: "fn", Line: 1}, []byte("#[test] fn a() {}\n"), true},
+		{ref.Target{Path: "src/lib.rs", Name: "a", Kind: "fn", Line: 1}, []byte("    #[cfg(test)] #[tokio::test(flavor = \"multi_thread\")] pub async fn a() {}\n"), true},
+		{ref.Target{Path: "src/lib.rs", Name: "a", Kind: "fn", Line: 2}, []byte("#[ignore] #[test]\nfn a() {}\n"), true},
+		{ref.Target{Path: "src/lib.rs", Name: "a", Kind: "fn", Line: 1}, []byte("#[inline] fn a() {} // #[test]\n"), false},
+		{ref.Target{Path: "src/lib.rs", Name: "a", Kind: "fn", Line: 2}, []byte("#[cfg(test)] #[test_case(1)]\nfn a() {}\n"), false},
 	} {
 		if got := IsTest(c.t, c.src); got != c.want {
 			t.Errorf("IsTest(%s:%s) = %v", c.t.Path, c.t.Name, got)
@@ -148,7 +154,7 @@ func TestCargo(t *testing.T) {
 	if cs := For(root, root, ts[:1]); cs[0].Caveat == "" {
 		t.Error("lib + main: no caveat")
 	}
-	c := &rustCrate{dir: filepath.Join(root, "crates", "a"), name: "a", targets: []rustTarget{{"lib", "a"}, {"bin", "a"}}}
+	c := &rustCrate{dir: filepath.Join(root, "crates", "a"), name: "a", main: "a", targets: []rustTarget{{"lib", "a"}, {"bin", "a"}}}
 	write(t, root, "crates/a/src/bin/tool/main.rs", "")
 	write(t, root, "crates/a/src/bin/gen.rs", "")
 	write(t, root, "crates/a/tests/x/main.rs", "")

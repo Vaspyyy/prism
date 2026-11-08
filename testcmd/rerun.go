@@ -421,7 +421,7 @@ func cargoRerun(root, cwd string, argv []string, failed []Failed) (Cmd, bool) {
 	}
 	head = append(head, "test")
 	i++
-	var opts, lib, pkgs []string
+	var opts, lib, pkgs, exclude []string
 	var sel cargoSel
 	workspace, manifest := false, ""
 	for ; i < len(argv) && argv[i] != "--"; i++ {
@@ -446,6 +446,8 @@ func cargoRerun(root, cwd string, argv []string, failed []Failed) (Cmd, bool) {
 		switch name {
 		case "-p", "--package":
 			pkgs = append(pkgs, value)
+		case "--exclude":
+			exclude = append(exclude, value)
 		case "--workspace", "--all":
 			workspace = true
 		case "--manifest-path":
@@ -506,7 +508,7 @@ func cargoRerun(root, cwd string, argv []string, failed []Failed) (Cmd, bool) {
 		}
 		es = append(es, e)
 	}
-	scope, ok := cargoScope(root, cwd, pkgs, workspace, manifest, load)
+	scope, ok := cargoScope(root, cwd, pkgs, exclude, workspace, manifest, load)
 	if !ok {
 		return Cmd{}, false
 	}

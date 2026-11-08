@@ -12,6 +12,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 
@@ -78,22 +79,60 @@ func goTestName(name string) bool {
 	return false
 }
 
-// rustTestAttr looks at the attributes and doc comments right above line
-// (1-based) for #[test] or #[path::test].
+// rustTestAttr looks at the attributes on line (1-based) before fn, and
+// those and the doc comments right above it, for #[test] or #[path::test].
 func rustTestAttr(src []byte, line int) bool {
 	lines := bytes.Split(src, []byte("\n"))
-	for i := line - 2; i >= 0 && i < len(lines); i-- {
+	if line < 1 || line > len(lines) {
+		return false
+	}
+	if def := string(lines[line-1]); rustFn.MatchString(def) && rustTestAttrs(def[:rustFn.FindStringIndex(def)[0]]) {
+		return true
+	}
+	for i := line - 2; i >= 0; i-- {
 		l := strings.TrimSpace(string(lines[i]))
 		switch {
-		case l == "#[test]" || (strings.HasPrefix(l, "#[") && (strings.HasSuffix(l, "::test]") || strings.Contains(l, "::test("))):
-			return true
-		case strings.HasPrefix(l, "#[") || strings.HasPrefix(l, "///") || strings.HasPrefix(l, "//"):
-			continue
+		case strings.HasPrefix(l, "#["):
+			if rustTestAttrs(l) {
+				return true
+			}
+		case strings.HasPrefix(l, "//"):
 		default:
 			return false
 		}
 	}
 	return false
+}
+
+var rustFn = regexp.MustCompile(`\bfn\s`)
+
+// rustTestAttrs reports whether a run of attributes ("#[test] #[ignore]")
+// has #[test] or #[path::test] (#[tokio::test(flavor = "multi_thread")]).
+func rustTestAttrs(s string) bool {
+	for {
+		i := strings.Index(s, "#[")
+		if i < 0 {
+			return false
+		}
+		s = s[i+2:]
+		depth, j := 1, 0
+		for ; j < len(s) && depth > 0; j++ {
+			switch s[j] {
+			case '[':
+				depth++
+			case ']':
+				depth--
+			}
+		}
+		a := strings.TrimSpace(strings.TrimSuffix(s[:j], "]"))
+		if k := strings.IndexAny(a, "( \t"); k >= 0 {
+			a = a[:k]
+		}
+		if a == "test" || strings.HasSuffix(a, "::test") {
+			return true
+		}
+		s = s[j:]
+	}
 }
 
 // For builds the commands that run tests, one per Go module, Cargo
@@ -326,12 +365,14 @@ func cargoCmd(root, cwd, crate string, ts []ref.Target) (Cmd, bool) {
 		sel.add("--"+t.kind, t.name)
 		args = append(args, "--"+t.kind, t.name)
 	} else {
-		es = slices.DeleteFunc(es, func(e rustEntry) bool { return !slices.ContainsFunc(e.own, sel.selects) })
+		es = slices.DeleteFunc(es, func(e rustEntry) bool {
+			return !slices.ContainsFunc(e.own, func(t rustTarget) bool { return sel.selects(c, t) })
+		})
 	}
 	if len(es) == 0 {
 		return Cmd{}, false
 	}
-	scope, ok := cargoScope(root, cwd, nil, false, manifest, load)
+	scope, ok := cargoScope(root, cwd, nil, nil, false, manifest, load)
 	if !ok {
 		return Cmd{}, false
 	}
