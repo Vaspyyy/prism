@@ -216,13 +216,13 @@ func Read(path string) (data []byte, ok bool) {
 	if st, err := os.Lstat(path); err != nil || !st.Mode().IsRegular() || st.Size() > MaxSize {
 		return nil, false
 	}
-	f, err := os.Open(path)
+	f, err := openFile(path)
 	if err != nil {
 		return nil, false
 	}
 	defer f.Close()
-	// the path may have been swapped for a symlink since Lstat: what was
-	// opened must be a regular file too, and reading stops at the limit
+	// the path may have been swapped since Lstat: what was opened must be
+	// a regular file too, and reading stops at the limit
 	if st, err := f.Stat(); err != nil || !st.Mode().IsRegular() {
 		return nil, false
 	}
