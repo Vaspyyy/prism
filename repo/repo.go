@@ -107,6 +107,17 @@ func (in *Info) Dirty() (bool, error) {
 	return out != "", nil
 }
 
+// IsRev reports whether rev names a commit in this repository (a hash,
+// branch, tag, HEAD~2, …). ref.Parse uses it to tell "main.go:run@b681ef1"
+// from a name that contains '@'.
+func (in *Info) IsRev(rev string) bool {
+	if !in.Git || rev == "" || strings.HasPrefix(rev, "-") {
+		return false
+	}
+	_, err := git(in.Root, "rev-parse", "-q", "--verify", "--end-of-options", rev+"^{commit}")
+	return err == nil
+}
+
 // Abs returns the absolute path of a repo-relative path.
 func (in *Info) Abs(rel string) string {
 	return filepath.Join(in.Root, filepath.FromSlash(rel))
