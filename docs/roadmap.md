@@ -45,7 +45,7 @@ Done when: the cross-tool test passes (every ref printed by any tool in the acce
 
 Done when: every tool's JSON for the acceptance scenario validates against the golden shapes, and refs inside it round-trip.
 
-## Phase 3: context and evidence
+## Phase 3: context and evidence (done 2026-11-08)
 
 - `prism/changes`: uncommitted and branch changes as symbols, with the 200-file and ~50 ms limits.
 - `prism/focus`: focus and last run, per worktree and session, atomic, expiring.
@@ -103,6 +103,10 @@ Things the work so far turned up that belong to a later step:
 - **glint** had a data race in directory listing that CI's race detector caught (fixed in glint#5).
 - **changes vs seek**: seek leaves out definitions that outline finds inside docstrings and template strings; `prism/changes` keeps them. Ordinals (`#N`) can then differ between the two and a mark is missed. Rare; the fix is one shared filter in outline.
 - **crux** has no "rerun only the failed tests" suggestion: `testcmd` would drop the original command's flags (`-tags`, `-race`). It needs a way to carry them over.
+- **crux** mention suggestions can still match a function name shared across packages (two `New`s) on text alone; ruling that out needs a repo-wide index.
+- **recap** hangs when the working tree has a symlink to a FIFO or device, already in 0.3.0: its diff reads working-tree files directly (`collect` in main.go, `gitx.Content`). It should read a symlink as git stores it (the target's path) and skip non-regular files, like `outline.Read`.
+- **glint** doesn't mark repositories nested inside a non-git folder it lists (`glint -A ~/Projekte`): Prism's change detection per repo would add about 140 ms for 52 repos. Cheaper ways: load scoped, files-only context for the few projects the map opens up, or let Prism reuse the `git status` glint already ran.
+- **v0.6.3** of Prism was tagged on the wrong commit (the same code as v0.6.2) and is retracted in go.mod; v0.6.4 is that release.
 
 ## Decisions taken
 
