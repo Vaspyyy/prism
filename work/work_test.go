@@ -157,11 +157,21 @@ func TestPeekAndUsed(t *testing.T) {
 	if s.Line() != "" || len(s.Applied()) != 0 {
 		t.Errorf("peeking counted as shown: %q", s.Line())
 	}
-	// ranking by a peeked mark: the line names the layer
+	// ranking by a peeked mark: the line names the layer, nothing was marked
 	s.Use(Rank)
 	s.Used(s.Peek("a.go:A")...)
-	if s.Line() != "context: 1 changed symbol vs HEAD" || !reflect.DeepEqual(s.Applied(), []string{Rank, Mark}) {
+	if s.Line() != "context: 1 changed symbol vs HEAD" || !reflect.DeepEqual(s.Applied(), []string{Rank}) {
 		t.Errorf("after Used: %q %q", s.Line(), s.Applied())
+	}
+	// a suggestion only context gave a reason for
+	s.Use(Suggest)
+	if !reflect.DeepEqual(s.Applied(), []string{Rank, Suggest}) {
+		t.Errorf("suggest: %q", s.Applied())
+	}
+	// printing a peeked mark
+	s.Show(s.PeekFile("a.go")...)
+	if !reflect.DeepEqual(s.Context().Applied, []string{Rank, Mark, Suggest}) {
+		t.Errorf("after Show: %q", s.Context().Applied)
 	}
 }
 

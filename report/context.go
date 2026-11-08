@@ -10,7 +10,8 @@ import (
 // PRISM_NO_CONTEXT=1). prism/work builds it; tools don't fill it by hand.
 type Context struct {
 	// Applied is what context changed in this run: any of "rank", "mark",
-	// "fill". Empty when context was available but changed nothing.
+	// "fill", "suggest" (a next: line only context gave a reason for).
+	// Empty when context was available but changed nothing.
 	Applied []string        `json:"applied"`
 	Changed *ContextChanged `json:"changed,omitempty"`  // derived: what changed in this worktree
 	Focus   *ContextFocus   `json:"focus,omitempty"`    // remembered: what recap last showed
