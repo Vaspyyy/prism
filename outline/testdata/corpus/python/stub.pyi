@@ -1,0 +1,6 @@
+def typed(x: int) -> str: ...
+
+class Typed:
+    """class Fake: ..."""
+
+    def method(self) -> None: ...

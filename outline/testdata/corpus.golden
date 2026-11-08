@@ -1,0 +1,208 @@
+c/buffer.c
+  3-3 define BUFFER_SIZE c/buffer.c:BUFFER_SIZE | #define BUFFER_SIZE 64
+  11-14 struct buffer c/buffer.c:buffer#1 | struct buffer
+  16-16 struct buffer c/buffer.c:buffer#2 | typedef struct buffer buffer_t;
+  21-38 func not_a_function_either c/buffer.c:not_a_function_either | int not_a_function_either(void)
+  23-28 func not_a_function_either.buffer_new c/buffer.c:not_a_function_either.buffer_new | buffer_t *buffer_new(size_t len)
+  30-32 func not_a_function_either.buffer_free c/buffer.c:not_a_function_either.buffer_free | void buffer_free(buffer_t *b)
+  34-38 func not_a_function_either.buffer_resize c/buffer.c:not_a_function_either.buffer_resize | int buffer_resize(buffer_t *b,
+c/buffer.h
+  2-2 define BUFFER_H c/buffer.h:BUFFER_H | #define BUFFER_H
+  4-4 struct buffer c/buffer.h:buffer | struct buffer;
+cpp/separators.cpp
+  2-7 func big cpp/separators.cpp:big | int big(int x)
+  9-11 func quote cpp/separators.cpp:quote | char quote()
+  13-15 func after cpp/separators.cpp:after | int after()
+cpp/shape.cpp
+  3-10 namespace geo cpp/shape.cpp:geo | namespace geo
+  5-8 class geo.Shape cpp/shape.cpp:geo.Shape | class Shape
+  13-33 func notAFunction cpp/shape.cpp:notAFunction | int notAFunction()
+  14-33 class notAFunction.NotAClass cpp/shape.cpp:notAFunction.NotAClass | class NotAClass
+  18-33 func notAFunction.NotAClass.alsoNot cpp/shape.cpp:notAFunction.NotAClass.alsoNot | double alsoNot()
+  21-23 func notAFunction.NotAClass.alsoNot.square cpp/shape.cpp:notAFunction.NotAClass.alsoNot.square | double square(double x)
+  31-33 func notAFunction.NotAClass.alsoNot.main cpp/shape.cpp:notAFunction.NotAClass.alsoNot.main | int main(int argc, char **argv)
+csharp/RawQuotes.cs
+  3-17 class Quotes csharp/RawQuotes.cs:Quotes | public class Quotes
+  7-13 method Quotes.NotAMethod csharp/RawQuotes.cs:Quotes.NotAMethod | public void NotAMethod()
+  10-12 method Quotes.NotAMethod.Real2 csharp/RawQuotes.cs:Quotes.NotAMethod.Real2 | public void Real2()
+  15-17 interface Quotes.IAfter csharp/RawQuotes.cs:Quotes.IAfter | public interface IAfter
+csharp/Store.cs
+  3-30 class Store csharp/Store.cs:Store | public class Store
+  6-30 method Store.NotAMethod csharp/Store.cs:Store.NotAMethod | public void NotAMethod()
+  10-22 class Store.NotAMethod.NotAClass csharp/Store.cs:Store.NotAMethod.NotAClass | public class NotAClass
+  13-16 method Store.NotAMethod.NotAClass.Add csharp/Store.cs:Store.NotAMethod.NotAClass.Add | public void Add(string item)
+  18-21 method Store.NotAMethod.NotAClass.Create csharp/Store.cs:Store.NotAMethod.NotAClass.Create | public static Store Create()
+  27-30 interface Store.NotAMethod.IListener csharp/Store.cs:Store.NotAMethod.IListener | public interface IListener
+gdscript/player.gd
+  2-2 class_name Player gdscript/player.gd:Player | class_name Player
+  5-6 func not_a_function gdscript/player.gd:not_a_function | func not_a_function():
+  9-9 signal died gdscript/player.gd:died | signal died
+  11-11 enum State gdscript/player.gd:State | enum State
+  13-14 func _ready gdscript/player.gd:_ready | func _ready():
+  16-18 func also_not gdscript/player.gd:also_not | func also_not():
+  20-21 func move gdscript/player.gd:move | func move(delta):
+  23-25 class Inner gdscript/player.gd:Inner | class Inner:
+go/server.go
+  11-60 func notAFunction go/server.go:notAFunction | func notAFunction()
+  12-12 type notAFunction.NotAType go/server.go:notAFunction.NotAType | type NotAType struct
+  22-24 type notAFunction.Server go/server.go:notAFunction.Server | type Server struct
+  27-33 func notAFunction.Server.Start go/server.go:notAFunction.Server.Start | func (s *Server) Start(addr string) error
+  35-35 func notAFunction.Server.Root go/server.go:notAFunction.Server.Root | func (s Server) Root() string
+  38-40 func notAFunction.Handler go/server.go:notAFunction.Handler | func Handler[T any](v T) string
+  42-42 type notAFunction.handlerFunc go/server.go:notAFunction.handlerFunc | type handlerFunc func(string) string
+  44-49 func notAFunction.run go/server.go:notAFunction.run | func run()
+  46-46 type notAFunction.run.Template go/server.go:notAFunction.run.Template | type Template struct
+  51-51 func notAFunction.run2 go/server.go:notAFunction.run2 | func run2()
+  55-55 func notAFunction.afterBackslash go/server.go:notAFunction.afterBackslash | func afterBackslash() string
+java/Store.java
+  7-29 class Store java/Store.java:Store | public class Store
+  9-29 method Store.notAMethod java/Store.java:Store.notAMethod | public void notAMethod()
+  11-29 class Store.notAMethod.NotAClass java/Store.java:Store.notAMethod.NotAClass | class NotAClass
+  14-16 method Store.notAMethod.NotAClass.add java/Store.java:Store.notAMethod.NotAClass.add | public void add(String item)
+  18-20 method Store.notAMethod.NotAClass.create java/Store.java:Store.notAMethod.NotAClass.create | public static Store create()
+  22-24 interface Store.notAMethod.NotAClass.Listener java/Store.java:Store.notAMethod.NotAClass.Listener | interface Listener
+  26-26 enum Store.notAMethod.NotAClass.Mode java/Store.java:Store.notAMethod.NotAClass.Mode | enum Mode
+  28-28 record Store.notAMethod.NotAClass.Pair java/Store.java:Store.notAMethod.NotAClass.Pair | record Pair(String a, String b)
+js/app.js
+  10-20 function createApp js/app.js:createApp | export function createApp(root)
+  12-54 function notAFunction js/app.js:notAFunction | function notAFunction()
+  16-18 function notAFunction.helper js/app.js:notAFunction.helper | function helper()
+  25-54 function notAFunction.stillInTemplate js/app.js:notAFunction.stillInTemplate | function stillInTemplate()
+  28-30 const notAFunction.stillInTemplate.total js/app.js:notAFunction.stillInTemplate.total | export const total = (items) =>
+  32-40 class notAFunction.stillInTemplate.Store js/app.js:notAFunction.stillInTemplate.Store | export class Store
+  33-35 method notAFunction.stillInTemplate.Store.constructor js/app.js:notAFunction.stillInTemplate.Store.constructor | constructor()
+  37-39 method notAFunction.stillInTemplate.Store.add js/app.js:notAFunction.stillInTemplate.Store.add | add(item)
+  42-44 function notAFunction.stillInTemplate.worker.onmessage js/app.js:notAFunction.stillInTemplate.worker.onmessage | worker.onmessage = (e) =>
+  47-49 method notAFunction.stillInTemplate.save js/app.js:notAFunction.stillInTemplate.save | save: (v) =>
+  52-54 function notAFunction.stillInTemplate.main js/app.js:notAFunction.stillInTemplate.main | export default function main()
+js/bundle.js
+  5-7 function licensed js/bundle.js:licensed | function licensed(r)
+  9-15 const prefixed js/bundle.js:prefixed | const prefixed = (t) => names.includes(t) ? "__" + t : t, options =
+  11-13 method prefixed.tagValueProcessor js/bundle.js:prefixed.tagValueProcessor | tagValueProcessor: function(t, e)
+  17-17 function after js/bundle.js:after | function after()
+  22-24 function el.saveSettings js/bundle.js:el.saveSettings | el.saveSettings = () =>
+js/nested_template.js
+  8-8 function after js/nested_template.js:after | function after()
+  10-14 class Later js/nested_template.js:Later | class Later
+  11-13 method Later.run js/nested_template.js:Later.run | run()
+  21-34 function notAFunction js/nested_template.js:notAFunction | function notAFunction()
+  24-26 function notAFunction.last js/nested_template.js:notAFunction.last | export function last()
+  30-30 function notAFunction.Name js/nested_template.js:notAFunction.Name | functionName,
+  31-31 function notAFunction.Arn js/nested_template.js:notAFunction.Arn | functionArn: "arn",
+  34-34 function notAFunction.generate js/nested_template.js:notAFunction.generate | function* generate()
+kotlin/Store.kt
+  3-3 class Item kotlin/Store.kt:Item | data class Item(val name: String)
+  5-25 class Store kotlin/Store.kt:Store | class Store
+  7-16 fun Store.notAFunction kotlin/Store.kt:Store.notAFunction | fun notAFunction()
+  8-8 class Store.notAFunction.NotAClass kotlin/Store.kt:Store.notAFunction.NotAClass | class NotAClass
+  11-13 fun Store.notAFunction.add kotlin/Store.kt:Store.notAFunction.add | fun add(item: Item)
+  15-15 fun Store.notAFunction.load kotlin/Store.kt:Store.notAFunction.load | suspend fun load(): List<Item> = emptyList()
+  21-21 fun Store.List kotlin/Store.kt:Store.List | fun <T> List<T>.second(): T = this[1]
+  23-25 object Store.Registry kotlin/Store.kt:Store.Registry | object Registry
+  24-24 fun Store.Registry.all kotlin/Store.kt:Store.Registry.all | fun all(): List<Store> = emptyList()
+lua/init.lua
+  4-5 function M.commented_out lua/init.lua:M.commented_out | function M.commented_out()
+  9-10 function not_a_function lua/init.lua:not_a_function | function not_a_function()
+  14-14 function also_not lua/init.lua:also_not | function also_not()
+  17-19 function M.setup lua/init.lua:M.setup | function M.setup(opts)
+  21-23 function helper lua/init.lua:helper | local function helper()
+  25-27 function M:method lua/init.lua:M:method | function M:method()
+markdown/README.md
+  1-16 h1 Corpus markdown/README.md:Corpus | # Corpus
+  5-13 h2 Install markdown/README.md:Install | ## Install
+  12-13 h3 From source markdown/README.md:From source | ### From source
+  14-16 h2 Usage markdown/README.md:Usage | ## Usage
+python/crlf.py
+  3-3 def fake python/crlf.py:fake | def fake():\
+  7-8 def real python/crlf.py:real | def real():
+python/stub.pyi
+  1-1 def typed python/stub.pyi:typed | def typed(x: int) -> str: ...
+  3-6 class Typed python/stub.pyi:Typed | class Typed:
+  6-6 def Typed.method python/stub.pyi:Typed.method | def method(self) -> None: ...
+python/tool.py
+  4-5 def run python/tool.py:run#1 | def run():
+  10-12 def run python/tool.py:run#2 | def run():
+  15-23 class Runner python/tool.py:Runner | class Runner:
+  18-19 class Runner.FakeRunner python/tool.py:Runner.FakeRunner | class FakeRunner:
+  19-19 def Runner.FakeRunner.fake python/tool.py:Runner.FakeRunner.fake | def fake(self): ...
+  22-23 def Runner.start python/tool.py:Runner.start | def start(self):
+  24-25 def not_a_method python/tool.py:not_a_method | def not_a_method():
+  29-30 def stop python/tool.py:stop | async def stop(self):
+  33-38 def run python/tool.py:run#3 | def run():
+  36-36 def run.raw_fake python/tool.py:run.raw_fake | def raw_fake():
+  41-45 def outer python/tool.py:outer | def outer():
+  42-43 def outer.inner python/tool.py:outer.inner | def inner():
+ruby/store.rb
+  1-20 class Store ruby/store.rb:Store | class Store
+  3-4 def Store.not_a_method ruby/store.rb:Store.not_a_method | def not_a_method
+  13-15 def Store.add ruby/store.rb:Store.add | def add(item)
+  17-19 def Store.self.create ruby/store.rb:Store.self.create | def self.create
+  22-24 module Corpus ruby/store.rb:Corpus | module Corpus
+  27-28 def commented_out ruby/store.rb:commented_out | def commented_out
+  31-33 def top_level ruby/store.rb:top_level | def top_level
+rust/lib.rs
+  11-13 struct Grid rust/lib.rs:Grid | pub struct Grid<'a>
+  15-23 impl Grid<'a> rust/lib.rs:Grid<'a> | impl<'a> Grid<'a>
+  16-18 fn Grid.new rust/lib.rs:Grid.new | pub fn new(cells: &'a [u8]) -> Self
+  20-22 fn Grid.len rust/lib.rs:Grid.len | pub fn len(&self) -> usize
+  25-27 trait Shape rust/lib.rs:Shape | pub trait Shape
+  26-26 fn Shape.area rust/lib.rs:Shape.area | fn area(&self) -> f64;
+  29-33 impl Shape for Grid<'_> rust/lib.rs:Shape for Grid<'_> | impl Shape for Grid<'_>
+  30-32 fn Grid.area rust/lib.rs:Grid.area | fn area(&self) -> f64
+  36-72 fn not_a_function rust/lib.rs:not_a_function | fn not_a_function()
+  37-37 struct not_a_function.NotAStruct rust/lib.rs:not_a_function.NotAStruct | struct NotAStruct;
+  40-46 fn not_a_function.help rust/lib.rs:not_a_function.help | pub fn help() -> &'static str
+  42-72 impl not_a_function.NotAnImpl rust/lib.rs:not_a_function.NotAnImpl | impl NotAnImpl
+  48-52 fn not_a_function.NotAnImpl.quotes rust/lib.rs:not_a_function.NotAnImpl.quotes | pub fn quotes() -> (char, char, &'static str)
+  50-72 fn not_a_function.NotAnImpl.in_a_plain_string rust/lib.rs:not_a_function.NotAnImpl.in_a_plain_string | fn in_a_plain_string()
+  55-72 struct not_a_function.NotAnImpl.in_a_plain_string.NotInBytes rust/lib.rs:not_a_function.NotAnImpl.in_a_plain_string.NotInBytes | struct NotInBytes
+  58-62 macro_rules! not_a_function.NotAnImpl.in_a_plain_string.NotInBytes.square rust/lib.rs:not_a_function.NotAnImpl.in_a_plain_string.NotInBytes.square | macro_rules! square
+  65-72 mod not_a_function.NotAnImpl.in_a_plain_string.NotInBytes.tests rust/lib.rs:not_a_function.NotAnImpl.in_a_plain_string.NotInBytes.tests | mod tests
+  69-71 fn not_a_function.NotAnImpl.in_a_plain_string.NotInBytes.tests.grid_len rust/lib.rs:not_a_function.NotAnImpl.in_a_plain_string.NotInBytes.tests.grid_len | fn grid_len()
+scala/Store.scala
+  3-14 class Store scala/Store.scala:Store | class Store
+  5-10 class Store.NotAClass scala/Store.scala:Store.NotAClass | class NotAClass
+  6-6 object Store.NotAClass.NotAnObject scala/Store.scala:Store.NotAClass.NotAnObject | object NotAnObject
+  12-14 object Store.Store scala/Store.scala:Store.Store | object Store
+sh/build.sh
+  3-28 function usage sh/build.sh:usage | usage()
+  7-9 function usage.fake_in_heredoc sh/build.sh:usage.fake_in_heredoc | fake_in_heredoc()
+  11-13 function usage.clean sh/build.sh:usage.clean | function clean
+  15-17 function usage.build sh/build.sh:usage.build | build()
+  19-28 function usage.help sh/build.sh:usage.help | help()
+  21-25 function usage.help.not_in_help sh/build.sh:usage.help.not_in_help | not_in_help()
+sh/heredoc_tags.sh
+  4-6 function calc sh/heredoc_tags.sh:calc | calc()
+  8-16 function gen sh/heredoc_tags.sh:gen | gen()
+  10-12 function gen.fake sh/heredoc_tags.sh:gen.fake | fake()
+  14-16 function gen.after sh/heredoc_tags.sh:gen.after | after()
+sh/quotes.sh
+  4-9 function count sh/quotes.sh:count | count()
+  11-13 function greet sh/quotes.sh:greet | greet()
+  17-23 function ansi sh/quotes.sh:ansi | ansi()
+  21-23 function ansi.last sh/quotes.sh:ansi.last | last()
+svelte/Counter.svelte
+  4-6 function increment svelte/Counter.svelte:increment | function increment()
+  9-13 function notAFunction svelte/Counter.svelte:notAFunction | function notAFunction()
+ts/expression_bodies.ts
+  2-3 const query ts/expression_bodies.ts:query | const query = (name: string, fields: ReadonlyArray<string>): string =>
+  9-9 type Route ts/expression_bodies.ts:Route | export type Route = `/$
+  11-11 const multi ts/expression_bodies.ts:multi | export const multi = (rows: string[]) => `
+  15-17 function after ts/expression_bodies.ts:after | export function after()
+ts/model.ts
+  1-3 interface Message ts/model.ts:Message | export interface Message
+  5-5 type Id ts/model.ts:Id | export type Id = string;
+  7-10 enum Kind ts/model.ts:Kind | export enum Kind
+  13-35 class NotAClass ts/model.ts:NotAClass | export class NotAClass
+  14-35 function NotAClass.notAFunction ts/model.ts:NotAClass.notAFunction | function notAFunction()
+  17-27 class NotAClass.notAFunction.Model ts/model.ts:NotAClass.notAFunction.Model | export class Model
+  20-22 method NotAClass.notAFunction.Model.add ts/model.ts:NotAClass.notAFunction.Model.add | add(m: Message): void
+  24-26 method NotAClass.notAFunction.Model.size ts/model.ts:NotAClass.notAFunction.Model.size | get size(): number
+  33-35 function NotAClass.notAFunction.load ts/model.ts:NotAClass.notAFunction.load | export async function load(id: Id): Promise<Message>
+ts/view.tsx
+  3-8 function View ts/view.tsx:View | export function View(props:
+  5-12 function notAComponent ts/view.tsx:notAComponent | function notAComponent()
+  10-12 const notAComponent.Item ts/view.tsx:notAComponent.Item | export const Item = (
+vue/List.vue
+  10-12 method data vue/List.vue:data | data()
+  15-17 function sortItems vue/List.vue:sortItems | function sortItems(items)
