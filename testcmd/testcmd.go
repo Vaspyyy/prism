@@ -1,5 +1,6 @@
 // Package testcmd builds the command that runs a given set of tests: Go,
-// pytest and cargo (docs/evidence.md, "Suggesting tests").
+// pytest and cargo (docs/evidence.md, "Suggesting tests"). For builds it
+// from scratch; Rerun reruns a run's failed tests with the run's own flags.
 //
 // It only builds commands it can make precise. Each one says how many of
 // the tests it selects and, where the runner's filter may also select
@@ -11,6 +12,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 
@@ -77,17 +79,24 @@ func goTestName(name string) bool {
 	return false
 }
 
-// rustTestAttr looks at the attributes and doc comments right above line
-// (1-based) for #[test] or #[path::test].
+// rustTestAttr looks at the attributes on line (1-based) before fn, and
+// those and the doc comments right above it, for #[test] or #[path::test].
 func rustTestAttr(src []byte, line int) bool {
 	lines := bytes.Split(src, []byte("\n"))
-	for i := line - 2; i >= 0 && i < len(lines); i-- {
+	if line < 1 || line > len(lines) {
+		return false
+	}
+	if def := string(lines[line-1]); rustFn.MatchString(def) && rustTestAttrs(def[:rustFn.FindStringIndex(def)[0]]) {
+		return true
+	}
+	for i := line - 2; i >= 0; i-- {
 		l := strings.TrimSpace(string(lines[i]))
 		switch {
-		case l == "#[test]" || (strings.HasPrefix(l, "#[") && (strings.HasSuffix(l, "::test]") || strings.Contains(l, "::test("))):
-			return true
-		case strings.HasPrefix(l, "#[") || strings.HasPrefix(l, "///") || strings.HasPrefix(l, "//"):
-			continue
+		case strings.HasPrefix(l, "#["):
+			if rustTestAttrs(l) {
+				return true
+			}
+		case strings.HasPrefix(l, "//"):
 		default:
 			return false
 		}
@@ -95,11 +104,43 @@ func rustTestAttr(src []byte, line int) bool {
 	return false
 }
 
+var rustFn = regexp.MustCompile(`\bfn\s`)
+
+// rustTestAttrs reports whether a run of attributes ("#[test] #[ignore]")
+// has #[test] or #[path::test] (#[tokio::test(flavor = "multi_thread")]).
+func rustTestAttrs(s string) bool {
+	for {
+		i := strings.Index(s, "#[")
+		if i < 0 {
+			return false
+		}
+		s = s[i+2:]
+		depth, j := 1, 0
+		for ; j < len(s) && depth > 0; j++ {
+			switch s[j] {
+			case '[':
+				depth++
+			case ']':
+				depth--
+			}
+		}
+		a := strings.TrimSpace(strings.TrimSuffix(s[:j], "]"))
+		if k := strings.IndexAny(a, "( \t"); k >= 0 {
+			a = a[:k]
+		}
+		if a == "test" || strings.HasSuffix(a, "::test") {
+			return true
+		}
+		s = s[j:]
+	}
+}
+
 // For builds the commands that run tests, one per Go module, Cargo
 // package and one for pytest, in that order. root is the repository root
 // (absolute); cwd is where the command will run, and paths in it are
-// relative to that. Tests that aren't Go, Python or Rust are left out;
-// pass only symbols IsTest accepts.
+// relative to that. Tests that aren't Go, Python or Rust are left out, and
+// Rust tests whose path the files don't tell (see cargoCmd); pass only
+// symbols IsTest accepts.
 func For(root, cwd string, tests []ref.Target) []Cmd {
 	var gomods, crates []string
 	gos := map[string][]ref.Target{}
@@ -131,7 +172,9 @@ func For(root, cwd string, tests []ref.Target) []Cmd {
 		out = append(out, goCmd(root, cwd, m, gos[m]))
 	}
 	for _, c := range crates {
-		out = append(out, cargoCmd(root, cwd, c, rusts[c]))
+		if cmd, ok := cargoCmd(root, cwd, c, rusts[c]); ok {
+			out = append(out, cmd)
+		}
 	}
 	if len(pys) > 0 {
 		out = append(out, pytestCmd(root, cwd, pys))
@@ -182,6 +225,33 @@ func rel(base, p string, dirSlash bool) string {
 // every listed package, so with several packages a test of the same name
 // in another one runs too; that's checked and said.
 func goCmd(root, cwd, mod string, ts []ref.Target) Cmd {
+	sel := goSelect(root, ts)
+	var args []string
+	base := cwd
+	if within(mod, cwd) {
+		args = []string{"go", "test", "-run", sel.re}
+	} else {
+		args = []string{"go", "-C", rel(cwd, mod, false), "test", "-run", sel.re}
+		base = mod
+	}
+	for _, d := range sel.dirs {
+		args = append(args, rel(base, d, true))
+	}
+	return Cmd{Args: args, Tests: sel.n, Caveat: sel.caveat}
+}
+
+// goSelection is what a -run filter selects for some Go tests: the regexp,
+// the package directories (absolute, sorted), how many distinct tests, and
+// the caveat when a test of the same name in another listed package runs
+// too.
+type goSelection struct {
+	re     string
+	dirs   []string
+	n      int
+	caveat string
+}
+
+func goSelect(root string, ts []ref.Target) goSelection {
 	byDir := map[string]map[string]bool{}
 	var dirs, names []string
 	for _, t := range ts {
@@ -199,26 +269,13 @@ func goCmd(root, cwd, mod string, ts []ref.Target) Cmd {
 	}
 	slices.Sort(dirs)
 	slices.Sort(names)
-	n := 0
-	for _, set := range byDir {
-		n += len(set)
-	}
-	re := "^" + names[0] + "$"
+	sel := goSelection{re: "^" + names[0] + "$", dirs: dirs}
 	if len(names) > 1 {
-		re = "^(" + strings.Join(names, "|") + ")$"
+		sel.re = "^(" + strings.Join(names, "|") + ")$"
 	}
-	var args []string
-	base := cwd
-	if within(mod, cwd) {
-		args = []string{"go", "test", "-run", re}
-	} else {
-		args = []string{"go", "-C", rel(cwd, mod, false), "test", "-run", re}
-		base = mod
+	for _, set := range byDir {
+		sel.n += len(set)
 	}
-	for _, d := range dirs {
-		args = append(args, rel(base, d, true))
-	}
-	c := Cmd{Args: args, Tests: n}
 	if len(dirs) > 1 {
 		wanted := map[string]bool{}
 		for _, nm := range names {
@@ -227,12 +284,12 @@ func goCmd(root, cwd, mod string, ts []ref.Target) Cmd {
 		for _, d := range dirs {
 			for _, nm := range goTests(d) {
 				if wanted[nm] && !byDir[d][nm] {
-					c.Caveat = "also runs tests of the same name in the other packages"
+					sel.caveat = "also runs tests of the same name in the other packages"
 				}
 			}
 		}
 	}
-	return c
+	return sel
 }
 
 // goTests lists the test functions in a directory's _test.go files.
@@ -268,65 +325,77 @@ func pytestCmd(root, cwd string, ts []ref.Target) Cmd {
 	return Cmd{Args: append([]string{"pytest"}, ids...), Tests: len(ids)}
 }
 
-// cargoCmd: cargo test [--manifest-path] [--test x] -- --exact path...
-// Test paths are the module path from the file's place in the crate plus
-// the qualified name. --exact makes each filter match one test path in
-// each target; a crate with both a library and a binary root can have
-// the same path in both.
-func cargoCmd(root, cwd, crate string, ts []ref.Target) Cmd {
-	var filters []string
-	targets := map[string]bool{}
+// cargoCmd: cargo test [--manifest-path m] [--test x] -- --exact path...
+// A test's path is its module path from the file's place in the crate
+// plus its qualified name; --exact makes each filter match one test path
+// in each test binary the command builds, and the caveat says when
+// another one may hold the same path. A crate whose files don't tell the
+// paths (rustCrate.opaque) gets no command. Left out are tests in a
+// module no target owns (tests/common/mod.rs), in a target with
+// required-features or harness = false, in a file of a target the
+// command doesn't build ([lib] test = false: a module of src/ may then be
+// in the main binary or not), and in example or bench targets unless all
+// are in one of them.
+func cargoCmd(root, cwd, crate string, ts []ref.Target) (Cmd, bool) {
+	crates := map[string]*rustCrate{}
+	load := func(dir string) *rustCrate {
+		if crates[dir] == nil {
+			crates[dir] = loadCrate(dir, lastSegments(ts))
+		}
+		return crates[dir]
+	}
+	c := load(crate)
+	if c.opaque() {
+		return Cmd{}, false
+	}
+	var es []rustEntry
 	for _, t := range ts {
-		r := rel(crate, filepath.Join(root, filepath.FromSlash(t.Path)), false)
-		mod, target := rustModule(r)
-		targets[target] = true
-		f := strings.ReplaceAll(t.Name, ".", "::")
-		if mod != "" {
-			f = mod + "::" + f
-		}
-		if !slices.Contains(filters, f) {
-			filters = append(filters, f)
+		mod, own, known := c.place(rel(crate, filepath.Join(root, filepath.FromSlash(t.Path)), false))
+		if known {
+			es = append(es, rustEntry{crate: c, own: own, known: true, file: t.Path, path: rustJoin(mod, t.Name)})
 		}
 	}
-	slices.Sort(filters)
 	args := []string{"cargo", "test"}
+	manifest := ""
 	if !within(crate, cwd) {
-		args = append(args, "--manifest-path", rel(cwd, filepath.Join(crate, "Cargo.toml"), false))
+		manifest = rel(cwd, filepath.Join(crate, "Cargo.toml"), false)
+		args = append(args, "--manifest-path", manifest)
 	}
-	c := Cmd{Tests: len(filters)}
-	if len(targets) == 1 && !targets[""] {
-		for t := range targets {
-			args = append(args, "--test", t)
-		}
-	} else if exists(filepath.Join(crate, "src", "lib.rs")) && exists(filepath.Join(crate, "src", "main.rs")) {
-		c.Caveat = "also runs tests with the same path in the crate's other targets"
+	// a test in a target cargo skips without some features, or that runs its
+	// own main instead of libtest, may not run at all
+	es = slices.DeleteFunc(es, func(e rustEntry) bool {
+		return slices.ContainsFunc(e.own, func(t rustTarget) bool { f := c.flag(t); return f.features || f.noHarness })
+	})
+	var sel cargoSel
+	if len(es) > 0 && len(es[0].own) == 1 && es[0].own[0].kind != "lib" && es[0].own[0].kind != "bin" &&
+		!slices.ContainsFunc(es, func(e rustEntry) bool { return !slices.Equal(e.own, es[0].own) }) {
+		t := es[0].own[0]
+		sel.add("--"+t.kind, t.name)
+		args = append(args, "--"+t.kind, t.name)
+	} else {
+		// every target the file may be in must be built: a module of src/
+		// may be in only one of the library and the main binary
+		es = slices.DeleteFunc(es, func(e rustEntry) bool {
+			return slices.ContainsFunc(e.own, func(t rustTarget) bool { return !sel.selects(c, t) })
+		})
 	}
-	c.Args = append(append(args, "--", "--exact"), filters...)
-	return c
-}
-
-// rustModule turns a crate-relative file path into its module path, and
-// the integration test target for files under tests/ ("" otherwise):
-// src/lib.rs "", src/a/b.rs "a::b", src/a/mod.rs "a", tests/x.rs "" in x.
-func rustModule(p string) (mod, target string) {
-	p = strings.TrimSuffix(p, ".rs")
-	parts := strings.Split(p, "/")
-	switch {
-	case len(parts) >= 2 && parts[0] == "tests":
-		target = parts[1]
-		parts = parts[2:]
-	case len(parts) >= 1 && parts[0] == "src":
-		parts = parts[1:]
-		if len(parts) >= 2 && parts[0] == "bin" {
-			parts = parts[2:] // a binary's root (src/bin/x.rs or src/bin/x/main.rs)
-		}
-	default:
-		return "", ""
+	if len(es) == 0 {
+		return Cmd{}, false
 	}
-	if n := len(parts); n > 0 && (parts[n-1] == "mod" || (n == 1 && (parts[0] == "main" || parts[0] == "lib"))) {
-		parts = parts[:n-1] // a module's mod.rs, or a target's root file
+	scope, ok := cargoScope(root, cwd, nil, nil, false, manifest, load)
+	if !ok {
+		return Cmd{}, false
 	}
-	return strings.Join(parts, "::"), target
+	shared, ok := rustCaveat(scope, sel, es)
+	if !ok {
+		return Cmd{}, false
+	}
+	filters, n := rustFilters(es)
+	cmd := Cmd{Args: append(append(args, "--", "--exact"), filters...), Tests: n}
+	if shared {
+		cmd.Caveat = "also runs tests with the same path in the crate's other targets"
+	}
+	return cmd, true
 }
 
 func exists(p string) bool {
