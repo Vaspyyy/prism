@@ -112,6 +112,55 @@ func TestRerunGo(t *testing.T) {
 	rerun(t, root, root, "go test ./...", nil, "")
 }
 
+func TestRerunGoSubtests(t *testing.T) {
+	root := t.TempDir()
+	write(t, root, "go.mod", "module x\n")
+	write(t, root, "a/a_test.go", "package a\n\nfunc TestA(t *testing.T) {}\n\nfunc TestB(t *testing.T) {}\n")
+	write(t, root, "b/b_test.go", "package b\n\nfunc TestA(t *testing.T) {}\n\nfunc TestC(t *testing.T) {}\n")
+	a := ref.Target{Path: "a/a_test.go", Name: "TestA", Kind: "func"}
+	b := ref.Target{Path: "a/a_test.go", Name: "TestB", Kind: "func"}
+	bA := ref.Target{Path: "b/b_test.go", Name: "TestA", Kind: "func"}
+	bC := ref.Target{Path: "b/b_test.go", Name: "TestC", Kind: "func"}
+	check := func(want string, n int, caveat string, failed ...Failed) {
+		t.Helper()
+		c := rerunF(t, root, root, "go test -v ./...", failed, want)
+		if want != "" && (c.Tests != n || c.Caveat != caveat) {
+			t.Errorf("%s: %d tests, caveat %q; want %d, %q", want, c.Tests, c.Caveat, n, caveat)
+		}
+	}
+	f := func(t ref.Target, printed string) Failed { return Failed{Target: t, Printed: printed} }
+
+	// failed subtests as go test printed them, each level quoted
+	check(`go test -v -run '^TestA$/^bad$' ./a/`, 1, "", f(a, "TestA/bad"))
+	check(`go test -v -run '^TestA$/^a\+b\(c\)\[1\]\|x\.\*$' ./a/`, 1, "", f(a, "TestA/a+b(c)[1]|x.*"))
+	check(`go test -v -run '^TestA$/^(bad|bad#01|with_space)$' ./a/`, 3, "",
+		f(a, "TestA/with_space"), f(a, "TestA/bad"), f(a, "TestA/bad#01"), f(a, "TestA/bad"))
+	check(`go test -v -run '^TestA$/^outer$/^(deep|inner)$' ./a/`, 2, "", f(a, "TestA/outer/inner"), f(a, "TestA/outer/deep"))
+	check(`go test -v -run '^TestA$/^bad$' ./a/ ./b/`, 2, "", f(a, "TestA/bad"), f(bA, "TestA/bad"))
+	// tests: as before, with or without the printed name
+	check(`go test -v -run '^TestA$' ./a/`, 1, "", f(a, ""))
+	check(`go test -v -run '^(TestA|TestB)$' ./a/`, 2, "", f(a, "TestA"), f(b, "TestB"))
+
+	// -run matches level by level and can't select these alone: the
+	// parent tests run, which the caveat says
+	passA := "also reruns passing subtests of TestA"
+	check(`go test -v -run '^(TestA|TestB)$' ./a/`, 2, "also reruns passing subtests of TestA and TestB", f(a, "TestA/bad"), f(b, "TestB/bad"))
+	check(`go test -v -run '^(TestA|TestB)$' ./a/`, 2, passA, f(a, "TestA/bad"), f(b, "TestB"))
+	check(`go test -v -run '^TestA$' ./a/`, 2, passA, f(a, "TestA"), f(a, "TestA/bad")) // failed on its own too
+	check(`go test -v -run '^TestA$' ./a/`, 2, passA, f(a, "TestA/outer"), f(a, "TestA/outer/inner"))
+	check(`go test -v -run '^TestA$' ./a/`, 2, passA, f(a, "TestA/bad"), f(a, "TestA/outer/inner"))
+	check(`go test -v -run '^TestA$' ./a/`, 2, passA, f(a, "TestA/x/inner"), f(a, "TestA/y/inner"))
+	check(`go test -v -run '^TestA$' ./a/ ./b/`, 2, passA, f(a, "TestA/bad"), f(bA, "TestA/worse"))
+	check(`go test -v -run '^(TestA|TestC)$' ./a/ ./b/`, 2,
+		"also reruns passing subtests of TestA and TestC; also runs tests of the same name in the other packages",
+		f(a, "TestA/bad"), f(bC, "TestC/bad"))
+
+	// a printed name that isn't the test or one of its subtests
+	for _, p := range []string{"TestB/bad", "TestAB/bad", "TestA/", "TestA//bad", "/TestA"} {
+		check("", 0, "", f(a, p))
+	}
+}
+
 func TestRerunPytest(t *testing.T) {
 	root := t.TempDir()
 	deep := ref.Target{Path: "tests/test_shop.py", Name: "TestShop.TestInner.test_deep", Kind: "def"}

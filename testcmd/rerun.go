@@ -1,7 +1,9 @@
 package testcmd
 
 import (
+	"cmp"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 
@@ -16,9 +18,10 @@ type Failed struct {
 
 	// Printed is the test as the runner printed it, if known: cargo's test
 	// path ("parser::tests::works"), pytest's node id
-	// ("tests/test_x.py::test_p[2]"). A cargo rerun selects that path
-	// rather than the one the file's place in the crate gives, and a
-	// pytest rerun that parametrization. Go reruns don't use it.
+	// ("tests/test_x.py::test_p[2]"), go's test name ("TestA/bad" for a
+	// subtest). A cargo rerun selects that path rather than the one the
+	// file's place in the crate gives, a pytest rerun that
+	// parametrization, and a go rerun that subtest.
 	Printed string
 }
 
@@ -102,8 +105,9 @@ func set(names ...string) map[string]bool {
 }
 
 // goRerun: go [-C dir] test <argv's flags> -run '^(A|B)$' <failed packages>
-// [-args …]. Packages and -run are replaced, -bench and -benchtime
-// dropped; argv's packages only tell which module the run was in.
+// [-args …], or -run '^A$/^(x|y)$' for failed subtests (goRerunSelect).
+// Packages and -run are replaced, -bench and -benchtime dropped; argv's
+// packages only tell which module the run was in.
 func goRerun(root, cwd string, argv []string, failed []Failed) (Cmd, bool) {
 	if !all(failed, "_test.go") {
 		return Cmd{}, false
@@ -187,10 +191,8 @@ func goRerun(root, cwd string, argv []string, failed []Failed) (Cmd, bool) {
 		}
 	}
 	// one module, which the run could reach from where it ran
-	ts := make([]ref.Target, len(failed))
 	mod := ""
-	for i, t := range failed {
-		ts[i] = t.Target
+	for _, t := range failed {
 		m := up(root, filepath.Dir(filepath.Join(root, filepath.FromSlash(t.Path))), "go.mod", nil)
 		if m == "" || mod != "" && m != mod {
 			return Cmd{}, false
@@ -200,12 +202,110 @@ func goRerun(root, cwd string, argv []string, failed []Failed) (Cmd, bool) {
 	if !within(mod, base) && up(root, base, "go.work", nil) == "" {
 		return Cmd{}, false
 	}
-	sel := goSelect(root, ts)
+	sel, ok := goRerunSelect(root, failed)
+	if !ok {
+		return Cmd{}, false
+	}
 	args := append(append(head, flags...), "-run", sel.re)
 	for _, d := range sel.dirs {
 		args = append(args, rel(base, d, true))
 	}
 	return Cmd{Args: append(args, after...), Tests: sel.n, Caveat: sel.caveat}, true
+}
+
+// goRerunSelect is goSelect by the names go test printed: a failed subtest
+// is selected by its path, each level quoted (TestA/with_space, as go
+// prints "with space": -run '^TestA$/^with_space$'). -run matches a name
+// level by level, so subtests are selected exactly only when they are all
+// at one depth under one parent: '^TestA$/^outer$/^(a|b)$'. Otherwise
+// (subtests of several tests, at several depths, or a test failed on its
+// own as well as through a subtest) the parent tests are selected, and the
+// caveat says which also rerun their passing subtests. A printed name
+// that isn't the test's own, or a subtest of it, gives no selection.
+func goRerunSelect(root string, failed []Failed) (goSelection, bool) {
+	ts := make([]ref.Target, len(failed))
+	byDir := map[string]map[string]bool{} // package directory: printed names
+	var subs []string                     // distinct failed subtests
+	for i, t := range failed {
+		ts[i] = t.Target
+		p := cmp.Or(t.Printed, t.Name)
+		if p != t.Name && !strings.HasPrefix(p, t.Name+"/") || slices.Contains(strings.Split(p, "/"), "") {
+			return goSelection{}, false
+		}
+		d := filepath.Dir(filepath.Join(root, filepath.FromSlash(t.Path)))
+		if byDir[d] == nil {
+			byDir[d] = map[string]bool{}
+		}
+		byDir[d][p] = true
+		if p != t.Name && !slices.Contains(subs, p) {
+			subs = append(subs, p)
+		}
+	}
+	sel := goSelect(root, ts)
+	sel.n = 0
+	for _, ps := range byDir {
+		sel.n += len(ps)
+	}
+	if len(subs) == 0 {
+		return sel, true
+	}
+	slices.Sort(subs)
+	if re, ok := goSubtestRun(byDir, subs); ok {
+		sel.re = re
+		return sel, true
+	}
+	var parents []string
+	for _, s := range subs {
+		top, _, _ := strings.Cut(s, "/")
+		if !slices.Contains(parents, top) {
+			parents = append(parents, top)
+		}
+	}
+	caveat := "also reruns passing subtests of " + parents[len(parents)-1]
+	if len(parents) > 1 {
+		caveat = "also reruns passing subtests of " + strings.Join(parents[:len(parents)-1], ", ") + " and " + parents[len(parents)-1]
+	}
+	if sel.caveat != "" {
+		caveat += "; " + sel.caveat
+	}
+	sel.caveat = caveat
+	return sel, true
+}
+
+// goSubtestRun is the -run filter that selects exactly these subtests
+// (sorted) in every package: each package failed the same ones, every
+// failure is a subtest, and all are at one depth under one parent.
+func goSubtestRun(byDir map[string]map[string]bool, subs []string) (string, bool) {
+	for _, ps := range byDir {
+		if len(ps) != len(subs) {
+			return "", false // a test failed on its own, or other subtests did elsewhere
+		}
+		for _, s := range subs {
+			if !ps[s] {
+				return "", false
+			}
+		}
+	}
+	first := strings.Split(subs[0], "/")
+	parent := first[:len(first)-1]
+	var last []string
+	for _, s := range subs {
+		levels := strings.Split(s, "/")
+		if !slices.Equal(levels[:len(levels)-1], parent) {
+			return "", false
+		}
+		last = append(last, regexp.QuoteMeta(levels[len(levels)-1]))
+	}
+	var re []string
+	for _, l := range parent {
+		re = append(re, "^"+regexp.QuoteMeta(l)+"$")
+	}
+	if len(last) == 1 {
+		re = append(re, "^"+last[0]+"$")
+	} else {
+		re = append(re, "^("+strings.Join(last, "|")+")$")
+	}
+	return strings.Join(re, "/"), true
 }
 
 // pytest options by what a rerun does with them; an option missing here
