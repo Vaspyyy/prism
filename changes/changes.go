@@ -322,7 +322,7 @@ func hunks(root, base string, files []string) map[string][][2]int {
 		switch {
 		case strings.HasPrefix(l, "+++ "):
 			file = ""
-			if p, ok := strings.CutPrefix(unquote(l[4:]), "b/"); ok {
+			if p, ok := strings.CutPrefix(unquote(headerPath(l[4:])), "b/"); ok {
 				file = p
 			}
 		case strings.HasPrefix(l, "@@ ") && file != "":
@@ -356,6 +356,16 @@ func newSide(header string) (start, n int, ok bool) {
 		}
 	}
 	return start, n, true
+}
+
+// headerPath is the path in a ---/+++ line without the tab git appends
+// after a name that contains a space ("b/we ird/a.go\t"). A raw tab can't
+// be part of the name: git quotes a name with a tab and escapes it.
+func headerPath(s string) string {
+	if i := strings.IndexByte(s, '\t'); i >= 0 {
+		return s[:i]
+	}
+	return s
 }
 
 // unquote undoes git's quoting of unusual paths ("\"b/tab\\there.go\"").

@@ -217,6 +217,16 @@ func TestNewSide(t *testing.T) {
 	if got := unquote(`"b/tab\there.go"`); got != "b/tab\there.go" {
 		t.Errorf("unquote = %q", got)
 	}
+	for in, want := range map[string]string{
+		"b/a.go":                          "b/a.go",
+		"b/we ird/a.go\t":                 "b/we ird/a.go",
+		`"b/we ird/\303\244 b.go"` + "\t": "b/we ird/\u00e4 b.go",
+		`"b/tab\there.go"`:                "b/tab\there.go",
+	} {
+		if got := unquote(headerPath(in)); got != want {
+			t.Errorf("path of %q = %q, want %q", in, got, want)
+		}
+	}
 }
 
 func TestOptions(t *testing.T) {
@@ -279,5 +289,23 @@ func TestSymlinkNotRead(t *testing.T) {
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("Compute hangs on a symlink to /dev/zero")
+	}
+}
+
+func TestNamesWithSpaces(t *testing.T) {
+	// git pads ---/+++ names that contain a space with a tab, and quotes
+	// non-ASCII ones; their changed lines must still map to symbols
+	dir := newRepo(t)
+	for _, p := range []string{"we ird/a b.go", "we ird/\u00e4 b.go"} {
+		write(t, dir, p, "package a\n\nfunc A() {}\n\nfunc B() {}\n")
+	}
+	run(t, dir, "add", ".")
+	run(t, dir, "commit", "-q", "-m", "spaces")
+	for _, p := range []string{"we ird/a b.go", "we ird/\u00e4 b.go"} {
+		write(t, dir, p, "package a\n\nfunc A() { _ = 1 }\n\nfunc B() {}\n")
+	}
+	want := []string{"we ird/a b.go:A changed", "we ird/\u00e4 b.go:A changed"}
+	if got := refs(compute(t, dir)); !reflect.DeepEqual(got, want) {
+		t.Errorf("symbols = %q, want %q", got, want)
 	}
 }
