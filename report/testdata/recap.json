@@ -1,0 +1,82 @@
+{
+  "schema": "prism/1",
+  "tool": "recap",
+  "version": "1.2.3",
+  "args": [
+    "show",
+    "b681ef1"
+  ],
+  "repo": {
+    "root": "/work/shop",
+    "git": true,
+    "git_dir": "/work/shop/.git",
+    "head": "b681ef1c0ffee",
+    "branch": "main",
+    "default_branch": "main",
+    "dirty": false
+  },
+  "context": null,
+  "result": {
+    "old": "b681ef1^",
+    "new": "b681ef1",
+    "commit": {
+      "rev": "b681ef1c0ffee",
+      "author": "Ada",
+      "date": "2026-11-08T05:56:00+01:00",
+      "subject": "List: match prefixes",
+      "parents": [
+        "a1b2c3d"
+      ]
+    },
+    "files": [
+      {
+        "path": "internal/files/files.go",
+        "status": "modified",
+        "added": 3,
+        "removed": 1,
+        "lines": 272,
+        "changes": [
+          {
+            "what": "changed",
+            "symbol": {
+              "ref": "internal/files/files.go:List",
+              "path": "internal/files/files.go",
+              "name": "List",
+              "kind": "func",
+              "line": 73,
+              "end": 107,
+              "doc": [
+                70,
+                72
+              ],
+              "sig": "func List(roots []string, o Options) ([]string, error)"
+            },
+            "added": 1,
+            "removed": 1
+          },
+          {
+            "what": "renamed",
+            "symbol": {
+              "ref": "internal/files/files.go:globSet.matches",
+              "path": "internal/files/files.go",
+              "name": "globSet.matches",
+              "kind": "func",
+              "line": 187,
+              "end": 201
+            },
+            "old_ref": "internal/files/files.go:globSet.match",
+            "added": 2,
+            "removed": 0
+          }
+        ],
+        "outside": {
+          "added": 1,
+          "removed": 0
+        }
+      }
+    ]
+  },
+  "links": [],
+  "next": [],
+  "truncated": null
+}

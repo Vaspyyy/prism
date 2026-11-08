@@ -1,0 +1,29 @@
+{
+  "schema": "prism/1",
+  "tool": "seek",
+  "version": "1.2.3",
+  "args": [
+    "files.go:Open"
+  ],
+  "repo": {
+    "root": "/work/shop",
+    "git": true,
+    "git_dir": "/work/shop/.git",
+    "head": "b681ef1c0ffee",
+    "branch": "main",
+    "default_branch": "main",
+    "dirty": false
+  },
+  "context": null,
+  "error": {
+    "code": "ambiguous",
+    "message": "\"Open\" matches 2 definitions",
+    "candidates": [
+      "a.go:Repo.Open",
+      "b.go:File.Open"
+    ]
+  },
+  "links": [],
+  "next": [],
+  "truncated": null
+}

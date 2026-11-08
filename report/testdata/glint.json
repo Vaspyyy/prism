@@ -1,0 +1,45 @@
+{
+  "schema": "prism/1",
+  "tool": "glint",
+  "version": "1.2.3",
+  "args": [
+    "-A",
+    "--json",
+    "internal/files/files.go"
+  ],
+  "repo": {
+    "root": "/work/shop",
+    "git": true,
+    "git_dir": "/work/shop/.git",
+    "head": "b681ef1c0ffee",
+    "branch": "main",
+    "default_branch": "main",
+    "dirty": false
+  },
+  "context": null,
+  "result": {
+    "file": {
+      "path": "internal/files/files.go",
+      "lines": 272,
+      "size": 7000,
+      "symbols": [
+        {
+          "ref": "internal/files/files.go:List",
+          "path": "internal/files/files.go",
+          "name": "List",
+          "kind": "func",
+          "line": 73,
+          "end": 107,
+          "doc": [
+            70,
+            72
+          ],
+          "sig": "func List(roots []string, o Options) ([]string, error)"
+        }
+      ]
+    }
+  },
+  "links": [],
+  "next": [],
+  "truncated": null
+}
