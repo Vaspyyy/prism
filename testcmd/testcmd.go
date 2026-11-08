@@ -143,7 +143,7 @@ func For(root, cwd string, tests []ref.Target) []Cmd {
 // (containing want, if given). "" if there's none.
 func up(root, dir, file string, want []byte) string {
 	for {
-		if data, err := os.ReadFile(filepath.Join(dir, file)); err == nil && (want == nil || bytes.Contains(data, want)) {
+		if data, ok := outline.Read(filepath.Join(dir, file)); ok && (want == nil || bytes.Contains(data, want)) {
 			return dir
 		}
 		if dir == root || !within(root, dir) {
@@ -240,8 +240,8 @@ func goTests(dir string) []string {
 	files, _ := filepath.Glob(filepath.Join(dir, "*_test.go"))
 	var out []string
 	for _, f := range files {
-		data, err := os.ReadFile(f)
-		if err != nil {
+		data, ok := outline.Read(f)
+		if !ok {
 			continue
 		}
 		name := filepath.Base(f)
