@@ -2,6 +2,7 @@ package outline
 
 import (
 	"path/filepath"
+	"sort"
 	"strings"
 	"unicode/utf8"
 )
@@ -13,8 +14,10 @@ type Text struct {
 	// isn't labelled (code may come before the mark); the lines after it,
 	// up to and including the closing one, are. nil if there are none.
 	In map[int]string
-	// Code holds, per line, the ${…} parts of JavaScript template strings
-	// as byte ranges [start, end) of the line: they are code, not text.
+	// Code holds, per line, the code inside the ${…} of JavaScript template
+	// strings (and the $(…) and ${…} of shell "…") as byte ranges
+	// [start, end) of the line. A ${…} may span lines, and hold strings of
+	// its own.
 	Code map[int][][2]int
 }
 
@@ -29,18 +32,18 @@ func Multiline(name string, data []byte) Text {
 	if sy == nil || len(data) == 0 {
 		return Text{}
 	}
-	lines := strings.Split(string(data), "\n")
-	if lines[len(lines)-1] == "" {
-		lines = lines[:len(lines)-1] // a final newline ends the last line, it doesn't start one
-	}
+	lines := splitLines(data) // "\r\n" ends a line like "\n", as for Parse
 	var t Text
-	lx := lexer{sy: sy, lines: lines}
+	lx := newLexer(&source{sy: sy, lines: lines})
 	for n := range lines {
-		if lx.in != code {
+		if lx.inText() {
 			if t.In == nil {
 				t.In = map[int]string{}
 			}
-			t.In[n+1] = labels[lx.in]
+			t.In[n+1] = "string" // also a line that starts in a template's ${…}: Code has its code
+			if lx.in == comment {
+				t.In[n+1] = "comment"
+			}
 		}
 		lx.scan(n)
 		if len(lx.interps) > 0 {
@@ -64,11 +67,13 @@ type textSyntax struct {
 	hashWord  bool   // # starts a comment only at the start of a word (shell: $#, ${#x})
 	block     bool   // /* … */
 	chars     bool   // '…' is a character literal or a lifetime, not a string (Rust)
-	multi     bool   // "…" may span lines (Rust)
+	digitSep  bool   // ' between digits separates them (C++14: 10'000)
+	multi     byte   // multiDQ: "…" may span lines (Rust); multiShell: '…' and "…" may (shell)
 	regex     bool   // /…/ can be a regex literal (JavaScript)
 	backtick  byte   // `…`: rawTick (Go: no escapes) or template (JavaScript: escapes and ${…})
 	triple    string // the quotes that make triple-quoted strings: `"` for """, `"'` for ''' too
-	tripleEsc bool   // a backslash escapes in them (Python, Java), not in raw ones (Kotlin, Scala, C#)
+	tripleEsc bool   // a backslash escapes in them (Python, Java), not in raw ones (Kotlin, Scala)
+	rawQuotes bool   // C# raw strings: three or more quotes, closed by as many
 	rawRust   bool   // r"…", r#"…"#, br"…"
 	rawCpp    bool   // R"(…)", R"delim(…)delim"
 	verbatim  bool   // C# @"…" with "" for a quote
@@ -79,10 +84,12 @@ type textSyntax struct {
 }
 
 const (
-	rawTick   = 1
-	template  = 2
-	hereRuby  = 1
-	hereShell = 2
+	rawTick    = 1
+	template   = 2
+	multiDQ    = 1
+	multiShell = 2
+	hereRuby   = 1
+	hereShell  = 2
 )
 
 func mk(sy textSyntax) *textSyntax {
@@ -96,6 +103,11 @@ func mk(sy textSyntax) *textSyntax {
 	}
 	set(sy.block || sy.regex, '/')
 	set(sy.backtick != 0, '`')
+	set(sy.backtick == template || sy.multi == multiShell, '{') // brackets count inside a ${…} or $(…)
+	set(sy.backtick == template || sy.multi == multiShell, '}')
+	set(sy.multi == multiShell, '(')
+	set(sy.multi == multiShell, '$')
+	set(sy.multi == multiShell, ')')
 	set(sy.rawRust, 'r')
 	set(sy.rawCpp, 'R')
 	set(sy.verbatim, '@')
@@ -109,14 +121,14 @@ var (
 	goText  = mk(textSyntax{line: "//", block: true, backtick: rawTick})
 	jsText  = mk(textSyntax{line: "//", block: true, backtick: template, regex: true})
 	pyText  = mk(textSyntax{line: "#", triple: `"'`, tripleEsc: true})
-	cText   = mk(textSyntax{line: "//", block: true, rawCpp: true})
+	cText   = mk(textSyntax{line: "//", block: true, rawCpp: true, digitSep: true})
 	javText = mk(textSyntax{line: "//", block: true, triple: `"`, tripleEsc: true})
 	ktText  = mk(textSyntax{line: "//", block: true, triple: `"`})
-	csText  = mk(textSyntax{line: "//", block: true, triple: `"`, verbatim: true})
-	rsText  = mk(textSyntax{line: "//", block: true, chars: true, multi: true, rawRust: true})
+	csText  = mk(textSyntax{line: "//", block: true, rawQuotes: true, verbatim: true})
+	rsText  = mk(textSyntax{line: "//", block: true, chars: true, multi: multiDQ, rawRust: true})
 	luaText = mk(textSyntax{line: "--", luaLong: true})
 	rbText  = mk(textSyntax{line: "#", rubyBegin: true, heredoc: hereRuby})
-	shText  = mk(textSyntax{line: "#", hashWord: true, heredoc: hereShell})
+	shText  = mk(textSyntax{line: "#", hashWord: true, multi: multiShell, heredoc: hereShell})
 	noText  = mk(textSyntax{}) // only one-line strings
 )
 
@@ -139,9 +151,8 @@ const (
 	code kind = iota
 	str       // also a character or regex literal, a heredoc
 	comment
+	subcode // the code in a string's ${…} or $(…)
 )
-
-var labels = [...]string{str: "string", comment: "comment"}
 
 // seg is a part of a line of one kind: line[from:to].
 type seg struct {
@@ -157,31 +168,85 @@ type lexer struct {
 	lines []string
 	n     int   // the line being scanned
 	segs  []seg // that line, cut into parts of one kind
-	// the ${…} parts of a template string on that line: code, but a
-	// string's part in segs
+	// the code inside a string's ${…} on that line (subcode in segs)
 	interps [][2]int
 	from    int  // where the current part started
 	cur     kind // its kind
+	noRegex bool // a regex literal didn't close on this line: don't look again (long lines stay linear)
 
 	// the string or comment the scan is in after the last line, if any
 	in     kind   // code when it's in none
 	close  string // what ends it
 	esc    bool   // a backslash escapes the next byte
-	tmpl   bool   // ${…} is code
+	tmpl   bool   // ${…} is code (a template; also $(…) in a shell "…")
 	quote  bool   // "" is a quote, not the end (C# verbatim)
 	term   string // a heredoc or =begin comment: the line that ends it
 	trim   bool   // the terminator may be indented
 	prefix bool   // the terminator line only starts with term (=end)
+	// the ${…} (or shell $(…)) the scan is in, innermost last. A string
+	// opened in one is nested.
+	stack    []subst
+	codeFrom int // where the code of the innermost ${…} started on this line; -1 outside one
 
 	tag     string // a heredoc opened on this line: its terminator, from the next line on
 	tagTrim bool
-	noTerm  map[string]bool // heredoc tags without a terminator line after where they were seen
+	src     *source
+}
+
+// source is a file's lines, and what the lexers that scan them share.
+type source struct {
+	sy    *textSyntax
+	lines []string
+	terms map[hereKey][]int // the lines that could end a heredoc, built when one starts
+}
+
+// subst is code inside a string: ${…} in a template, ${…} or $(…) in a
+// shell "…".
+type subst struct {
+	open, close byte   // { } or ( )
+	depth       int    // how many open brackets of that kind inside it
+	back        string // the mark that ends the string it's in; "" for a shell ${…} in code
+	inSub       bool   // that ${…} in code is itself in a string's $(…)
+}
+
+type hereKey struct {
+	tag  string
+	trim bool // the terminator may be indented (<<-, <<~)
+}
+
+func newLexer(src *source) *lexer {
+	return &lexer{sy: src.sy, lines: src.lines, src: src, codeFrom: -1}
+}
+
+// codeKind is the kind of code at this point: subcode in a string's ${…}.
+func (lx *lexer) codeKind() kind {
+	if n := len(lx.stack); n > 0 && (lx.stack[n-1].back != "" || lx.stack[n-1].inSub) {
+		return subcode
+	}
+	return code
+}
+
+// inText: the next line starts inside a string or comment, or in the code
+// of a template's ${…}.
+func (lx *lexer) inText() bool {
+	if lx.in != code {
+		return true
+	}
+	for _, sub := range lx.stack {
+		if sub.back != "" {
+			return true // in the code of a ${…} in a string
+		}
+	}
+	return false
 }
 
 // scan cuts line n into lx.segs and moves the state past it.
 func (lx *lexer) scan(n int) {
 	s := lx.lines[n]
-	lx.n, lx.segs, lx.interps, lx.from, lx.cur = n, lx.segs[:0], lx.interps[:0], 0, lx.in
+	lx.n, lx.segs, lx.interps, lx.from, lx.cur, lx.noRegex = n, lx.segs[:0], lx.interps[:0], 0, lx.in, false
+	if lx.in == code && lx.codeKind() == subcode {
+		lx.cur, lx.codeFrom = subcode, 0 // a ${…} that continues from the line before
+	}
 	if lx.term != "" { // inside a heredoc or =begin comment: whole lines
 		if lx.isTerm(s) {
 			lx.in, lx.term = code, ""
@@ -202,6 +267,12 @@ func (lx *lexer) scan(n int) {
 		}
 	}
 	lx.flush(len(s))
+	if lx.codeFrom >= 0 {
+		if lx.codeFrom < len(s) {
+			lx.interps = append(lx.interps, [2]int{lx.codeFrom, len(s)})
+		}
+		lx.codeFrom = -1
+	}
 	if lx.tag != "" {
 		if lx.in == code {
 			lx.in, lx.term, lx.trim, lx.prefix = str, lx.tag, lx.tagTrim, false
@@ -242,34 +313,40 @@ func (lx *lexer) text(s string, i int) int {
 		if j < 0 {
 			return len(s)
 		}
-		i += j + len(lx.close)
-		lx.in = code
-		lx.to(i, code)
-		return i
+		return lx.closed(i + j + len(lx.close))
 	}
 	for i < len(s) {
 		c := s[i]
 		switch {
 		case c == '\\' && lx.esc:
 			i += 2
-		case c == '$' && lx.tmpl && i+1 < len(s) && s[i+1] == '{':
-			end := interpEnd(s, i+2)
-			if end < 0 {
-				i += 2
-				continue
+		case c == '$' && lx.tmpl && i+1 < len(s) && (s[i+1] == '{' || s[i+1] == '(' && lx.sy.multi == multiShell):
+			// code up to the matching } or ), on this line or a later one
+			sub := subst{open: '{', close: '}', back: lx.close}
+			if s[i+1] == '(' {
+				sub.open, sub.close = '(', ')'
 			}
-			lx.interps = append(lx.interps, [2]int{i + 2, end})
-			i = end + 1
+			lx.stack = append(lx.stack, sub)
+			lx.in, lx.codeFrom = code, i+2
+			lx.to(i+2, subcode)
+			return i + 2
 		case c == '"' && lx.quote && i+1 < len(s) && s[i+1] == '"':
 			i += 2
 		case c == lx.close[0] && strings.HasPrefix(s[i:], lx.close):
-			i += len(lx.close)
-			lx.in = code
-			lx.to(i, code)
-			return i
+			return lx.closed(i + len(lx.close))
 		default:
 			i++
 		}
+	}
+	return i
+}
+
+// closed ends the string or comment just before i.
+func (lx *lexer) closed(i int) int {
+	lx.in = code
+	lx.to(i, lx.codeKind())
+	if len(lx.stack) > 0 && lx.stack[len(lx.stack)-1].back != "" && lx.codeFrom < 0 {
+		lx.codeFrom = i // a template nested in a ${…} closed: its code goes on
 	}
 	return i
 }
@@ -290,7 +367,32 @@ func (lx *lexer) code(s string, i int) int {
 		next = s[i+1]
 	}
 	switch {
-	case sy.line != "" && c == sy.line[0] && strings.HasPrefix(s[i:], sy.line) && (!sy.hashWord || i == 0 || s[i-1] == ' ' || s[i-1] == '\t'):
+	case (c == '{' || c == '}' || c == '(' || c == ')') && len(lx.stack) > 0:
+		top := &lx.stack[len(lx.stack)-1]
+		switch {
+		case c == top.open:
+			top.depth++
+		case c != top.close:
+		case top.depth > 0:
+			top.depth--
+		default: // the end of the ${…}: back in its string
+			back := top.back
+			lx.stack = lx.stack[:len(lx.stack)-1]
+			if back == "" {
+				break // a shell ${…} in code
+			}
+			if lx.codeFrom >= 0 {
+				lx.interps = append(lx.interps, [2]int{lx.codeFrom, i})
+			}
+			lx.codeFrom = -1
+			lx.to(i, str)
+			lx.in, lx.close, lx.esc, lx.tmpl, lx.quote = str, back, true, true, false
+		}
+	case c == '$' && next == '{' && sy.multi == multiShell:
+		lx.stack = append(lx.stack, subst{open: '{', close: '}', inSub: lx.codeKind() == subcode}) // # in it isn't a comment
+		return i + 2
+	case sy.line != "" && c == sy.line[0] && strings.HasPrefix(s[i:], sy.line) && (!sy.hashWord || i == 0 || s[i-1] == ' ' || s[i-1] == '\t') &&
+		!(sy.multi == multiShell && len(lx.stack) > 0 && lx.stack[len(lx.stack)-1].open == '{'): // ${x%%[ #]*}
 		if sy.luaLong && next == '-' {
 			if close, n := longBracket(s, i+2); n > 0 {
 				return lx.open(i, 2+n, comment, close, false)
@@ -304,14 +406,21 @@ func (lx *lexer) code(s string, i int) int {
 		if next == '*' && sy.block {
 			return lx.open(i, 2, comment, "*/", false)
 		}
-		if sy.regex && next != '/' && next != '*' && regexStart(s[:i]) {
+		if sy.regex && !lx.noRegex && next != '/' && next != '*' && regexStart(s[:i]) {
 			if end := regexEnd(s, i); end > 0 {
 				lx.to(i, str) // a regex literal: its quotes and backticks open nothing
-				lx.to(end, code)
+				lx.to(end, lx.codeKind())
 				return end
 			}
+			lx.noRegex = true
 		}
 	case c == '`' && sy.backtick != 0:
+		if lx.codeFrom >= 0 { // a template nested in a ${…}: not code
+			if lx.codeFrom < i {
+				lx.interps = append(lx.interps, [2]int{lx.codeFrom, i})
+			}
+			lx.codeFrom = -1
+		}
 		i = lx.open(i, 1, str, "`", sy.backtick == template)
 		lx.tmpl = sy.backtick == template
 		return i
@@ -319,13 +428,29 @@ func (lx *lexer) code(s string, i int) int {
 		if sy.triple != "" && strings.IndexByte(sy.triple, c) >= 0 && i+2 < len(s) && next == c && s[i+2] == c {
 			return lx.open(i, 3, str, s[i:i+3], sy.tripleEsc)
 		}
-		if c == '"' && sy.multi {
+		if c == '"' && sy.rawQuotes {
+			n := 1
+			for i+n < len(s) && s[i+n] == '"' {
+				n++
+			}
+			if n >= 3 {
+				return lx.open(i, n, str, s[i:i+n], false)
+			}
+		}
+		switch {
+		case sy.multi == multiShell: // '…' has no escapes, except $'…'; "…" has $(…) and ${…}
+			i = lx.open(i, 1, str, s[i:i+1], c == '"' || i > 0 && s[i-1] == '$')
+			lx.tmpl = c == '"'
+			return i
+		case sy.multi == multiDQ && c == '"':
 			return lx.open(i, 1, str, `"`, true)
+		case sy.digitSep && c == '\'' && digitSep(s, i):
+			return i + 1
 		}
 		if c == '\'' && sy.chars {
 			if end := charEnd(s, i); end > 0 {
 				lx.to(i, str)
-				lx.to(end, code)
+				lx.to(end, lx.codeKind())
 				return end
 			}
 			return i + 1 // a lifetime
@@ -399,7 +524,7 @@ func (lx *lexer) oneLine(s string, i int) int {
 	case j == len(s):
 		return j
 	}
-	lx.to(j+1, code)
+	lx.to(j+1, lx.codeKind())
 	return j + 1
 }
 
@@ -478,23 +603,35 @@ func (lx *lexer) heredocStart(s string, i int) int {
 		}
 		k++
 	}
-	if lx.noTerm[tag] {
+	if !lx.src.terminated(tag, trim, lx.n) {
 		return -1
 	}
-	if lx.tag != "" {
-		return k // a second heredoc on the line: only the first is followed
+	if lx.tag == "" { // of several heredocs on a line, only the first is followed
+		lx.tag, lx.tagTrim = tag, trim
 	}
-	for _, l := range lx.lines[lx.n+1:] {
-		if termLine(l, tag, trim, false) {
-			lx.tag, lx.tagTrim = tag, trim
-			return k
+	return k
+}
+
+// terminated: a line after line n is just tag (indented, if trim), so a
+// heredoc there would end. The lines that could end one are indexed the
+// first time it's asked, so many heredocs don't make Parse slow.
+func (src *source) terminated(tag string, trim bool, n int) bool {
+	if src.terms == nil {
+		src.terms = map[hereKey][]int{}
+		for k, l := range src.lines {
+			l = strings.TrimSuffix(l, "\r")
+			t := strings.TrimLeft(l, " \t")
+			if t == "" || t[0] >= '0' && t[0] <= '9' || strings.IndexFunc(t, func(r rune) bool { return r > 127 || !isIdent(byte(r)) || r == '$' }) >= 0 {
+				continue
+			}
+			if t == l {
+				src.terms[hereKey{t, false}] = append(src.terms[hereKey{t, false}], k)
+			}
+			src.terms[hereKey{t, true}] = append(src.terms[hereKey{t, true}], k)
 		}
 	}
-	if lx.noTerm == nil {
-		lx.noTerm = map[string]bool{}
-	}
-	lx.noTerm[tag] = true // no line after this one ends it, nor after any later one
-	return -1
+	at := src.terms[hereKey{tag, trim}]
+	return sort.SearchInts(at, n+1) < len(at)
 }
 
 func (lx *lexer) isTerm(l string) bool { return termLine(l, lx.term, lx.trim, lx.prefix) }
@@ -510,22 +647,21 @@ func termLine(l, term string, trim, prefix bool) bool {
 	return l == term
 }
 
-// interpEnd is the index of the } that closes a ${ whose contents start at
-// s[i], or -1 if it doesn't close on this line.
-func interpEnd(s string, i int) int {
-	depth := 0
-	for ; i < len(s); i++ {
-		switch s[i] {
-		case '{':
-			depth++
-		case '}':
-			if depth == 0 {
-				return i
-			}
-			depth--
-		}
+// digitSep: the ' at s[i] separates digits of a number (10'000,
+// 0xFF'FF), it doesn't start a character literal.
+func digitSep(s string, i int) bool {
+	if i == 0 || i+1 >= len(s) || !isHex(s[i-1]) || !isHex(s[i+1]) {
+		return false
 	}
-	return -1
+	k := i - 1
+	for k > 0 && i-k < 40 && (isIdent(s[k-1]) || s[k-1] == '\'' || s[k-1] == '.') {
+		k-- // back to the start of the token, but not far (long lines stay linear)
+	}
+	return s[k] >= '0' && s[k] <= '9'
+}
+
+func isHex(c byte) bool {
+	return c >= '0' && c <= '9' || c >= 'a' && c <= 'f' || c >= 'A' && c <= 'F'
 }
 
 // regexStart: a slash after this JavaScript code starts a regex literal,

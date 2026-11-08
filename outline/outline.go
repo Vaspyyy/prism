@@ -140,7 +140,7 @@ var (
 	})
 	jsRules = prepare([]rule{
 		// also nested declarations (helpers inside a factory function)
-		r("function", `^\s*(?:export |return )?(?:default )?(?:async )?function\*? ?(\w+)`),
+		r("function", `^\s*(?:export |return )?(?:default )?(?:async )?function(?:\s*\*\s*|\s+)(\w+)`),
 		r("", `^(?:export )?(?:default )?(?:abstract )?(class|interface|enum|type) (\w+)`),
 		r("const", `^\s*(?:export )?(?:const|let|var) (\w+)\s*(?::[^=]+)?=\s*(?:async\s*)?(?:\([^)]*\)|\w+)\s*(?::[^=]+)?=>`),
 		r("method", `^(?:  |    |\t)(?:public |private |protected |static |async |readonly |override |get |set )*\*?(\w+)\s*\([^)]*\)\s*(?::[^{]+)?\{\s*$`),
@@ -249,11 +249,15 @@ func Parse(name string, data []byte, limit int) []Symbol {
 	// line must start in code. text marks the lines that don't, for the
 	// ends of indented blocks.
 	sy := syntaxByExt[ext(name)]
-	var lx *lexer
-	if sy != nil {
-		lx = &lexer{sy: sy, lines: lines}
+	if sy == nil {
+		sy = noText
 	}
-	strip := sy != nil && sy.line != "#" // a rule may match a line with a # comment, as before
+	src := &source{sy: sy, lines: lines}
+	var lx *lexer
+	if !md {
+		lx = newLexer(src)
+	}
+	strip := sy.line != "" && sy.line != "#" // a rule may match a line with a # comment, as before
 	needText := lx != nil && (lg.style == indent || lg.style == keyword)
 	var text []bool
 	var out []Symbol
@@ -269,21 +273,27 @@ func Parse(name string, data []byte, limit int) []Symbol {
 		if inFence {
 			continue
 		}
+		afterComment := false
 		if lx != nil {
-			inText := lx.in != code
+			inText, inComment := lx.in != code, lx.in == comment // the code in a template's ${…} is code
 			lx.scan(i)
 			if inText {
 				if text == nil {
 					text = make([]bool, len(lines))
 				}
 				text[i] = true
-				continue
+				// unless a block comment ends on the line with code after
+				// it: "*/ function f() {" in a bundle
+				afterComment = inComment && len(lx.segs) > 1 && lx.segs[1].kind == code
+				if !afterComment {
+					continue
+				}
 			}
 		}
 		if full {
 			continue // past the limit only the text lines are still needed, for indentEnd
 		}
-		if strip {
+		if strip || afterComment {
 			line = stripComments(line, lx.segs)
 			if strings.TrimSpace(line) == "" {
 				continue
@@ -321,7 +331,7 @@ func Parse(name string, data []byte, limit int) []Symbol {
 			break
 		}
 	}
-	findEnds(lg, sy, lines, text, out)
+	findEnds(lg, src, text, out)
 	findParents(out)
 	return out
 }
@@ -369,7 +379,8 @@ func splitLines(data []byte) []string {
 	return lines
 }
 
-func findEnds(lg *lang, sy *textSyntax, lines []string, text []bool, syms []Symbol) {
+func findEnds(lg *lang, src *source, text []bool, syms []Symbol) {
+	lines := src.lines
 	for k := range syms {
 		s := &syms[k]
 		switch lg.style {
@@ -379,7 +390,7 @@ func findEnds(lg *lang, sy *textSyntax, lines []string, text []bool, syms []Symb
 			if k+1 < len(syms) {
 				limit = syms[k+1].Line - 1
 			}
-			s.End = braceEnd(lines, s.Line-1, limit, sy, s.Kind == "define")
+			s.End = braceEnd(src, s.Line-1, limit, s.Kind == "define")
 		case indent, keyword:
 			s.End = indentEnd(lines, text, s.Line-1, lg.style == keyword)
 		case headings:
@@ -399,8 +410,11 @@ func findEnds(lg *lang, sy *textSyntax, lines []string, text []bool, syms []Symb
 
 // braceEnd returns the 1-based line of the brace that closes the block
 // opened on or after line start (0-based). A declaration without a block
-// (`type ID int`, `fn f();`) ends on its own line.
-func braceEnd(lines []string, start, limit int, sy *textSyntax, define bool) int {
+// (`type ID int`, `fn f();`) ends on its own line, and one whose value is
+// an expression with a string in it (const f = () => `…`) where that
+// expression ends.
+func braceEnd(src *source, start, limit int, define bool) int {
+	lines := src.lines
 	if define { // #define with continuation lines
 		j := start
 		for j+1 < len(lines) && strings.HasSuffix(strings.TrimRight(lines[j], " \t"), "\\") {
@@ -408,25 +422,91 @@ func braceEnd(lines []string, start, limit int, sy *textSyntax, define bool) int
 		}
 		return j + 1
 	}
-	if sy == nil {
-		sy = noText
-	}
-	lx := lexer{sy: sy, lines: lines} // the definition's line starts in code
+	lx := newLexer(src) // the definition's line starts in code
 	depth, opened, parens := 0, false, 0
+	var last, prev byte      // the last code byte that isn't blank, and the one right before it (or ' ')
+	inStmt, angle := true, 0 // still in the definition's statement; inside <generics>
+	// A value without a { block that has a string in it (const f = () =>
+	// `…`, type T = "a" | "b", fun f() = """…"""): the definition ends
+	// where that expression does, at a ; or at a line that the next doesn't
+	// continue, with its brackets closed.
+	value, strBody, nest, brackets := false, false, 0, 0
+	atValue := func() bool { // right after = or =>
+		return last == '=' && !strings.ContainsRune("=!<>", rune(prev)) || last == '>' && prev == '='
+	}
 	for j := start; j < len(lines); j++ {
 		if !opened && j >= limit && j > start {
-			return start + 1
+			switch {
+			case strBody && nest > 0: // definitions in the value's brackets ({ f: function() {…} })
+			case strBody:
+				return j // the line before the next definition
+			default:
+				return start + 1
+			}
 		}
 		lx.scan(j)
 		line := lines[j]
+		gap := true                          // a blank (or a new line) since last
+		lineEnd, endPrev := byte(0), byte(0) // how the line ends: its last code byte ('"' for a string), the one before
 		for _, sg := range lx.segs {
+			if sg.kind == str {
+				lineEnd, endPrev = '"', 0
+				top := !opened && parens == 0 && angle == 0 && inStmt
+				value = value || top && atValue()
+				if top && value && !strBody {
+					strBody, nest = true, brackets
+				}
+			}
 			if sg.kind != code {
-				continue // strings (with the ${…} in a template string) and comments
+				continue // strings and comments; the code in a template's ${…} counts
 			}
 			for k := sg.from; k < sg.to; k++ {
 				c := line[k]
+				blank := c == ' ' || c == '\t'
+				if !blank {
+					lineEnd, endPrev = c, lineEnd
+				}
+				if strBody && c == '{' && nest <= 0 && (last == '>' && prev == '=' || !strings.ContainsRune("?:,([=|&!+-*/%^~<>", rune(last))) {
+					strBody = false // a block after all: the string was in a type (f = (a): T["k"] => {)
+				}
+				if !blank && c != '=' && c != '>' && !opened && parens == 0 && angle == 0 && inStmt && atValue() {
+					value = true
+				}
+				switch {
+				case blank:
+					gap = true
+				case gap:
+					prev, last, gap = ' ', c, false
+				default:
+					prev, last = last, c
+				}
+				if strBody {
+					switch c {
+					case '(', '[', '{':
+						nest++
+					case ')', ']', '}':
+						nest--
+					case ';':
+						if nest <= 0 {
+							return j + 1
+						}
+					}
+					continue
+				}
 				if !opened && parens > 0 && c != '(' && c != ')' {
 					continue // braces in the parameters ({ a, b } = opts, struct{ x int }) aren't the body
+				}
+				if !opened && parens == 0 {
+					switch {
+					case c == '<':
+						angle++
+					case c == '>' && prev != '=' && prev != '-': // not => or ->
+						angle--
+					case c == '[':
+						brackets++
+					case c == ']':
+						brackets--
+					}
 				}
 				switch c {
 				case '(':
@@ -452,14 +532,43 @@ func braceEnd(lines []string, start, limit int, sy *textSyntax, define bool) int
 				}
 			}
 		}
+		goesOn := strings.IndexByte(continuesAfter, lineEnd) >= 0 && (lineEnd != '>' || endPrev == '=') // a > ends a type, => goes on
+		ends := !lx.inText() && !goesOn && !nextContinues(lines, j)
+		if strBody {
+			if ends && nest <= 0 && lineEnd != 0 { // a line of only a comment doesn't end it
+				return j + 1
+			}
+			continue
+		}
+		if ends && !opened && parens <= 0 && angle <= 0 {
+			inStmt = false // the statement ended without a value: a later = isn't its
+		}
 		if !opened && j-start > 30 {
 			return start + 1
 		}
 	}
-	if opened {
+	if opened || strBody {
 		return len(lines)
 	}
 	return start + 1
+}
+
+// An expression goes on after a line that ends with one of these, or
+// when the next line starts with one of continuesBefore.
+const (
+	continuesAfter  = "+-*/%&|^?:.,([{=<>!~"
+	continuesBefore = "+-%&|^?:.,>"
+)
+
+func nextContinues(lines []string, j int) bool {
+	for k := j + 1; k < len(lines) && k <= j+10; k++ {
+		t := strings.TrimSpace(lines[k])
+		if t == "" || strings.HasPrefix(t, "//") || strings.HasPrefix(t, "/*") || strings.HasPrefix(t, "*") {
+			continue // comment lines don't end it
+		}
+		return strings.IndexByte(continuesBefore, t[0]) >= 0 || strings.HasPrefix(t, "else") && (len(t) == 4 || !isIdent(t[4]))
+	}
+	return false
 }
 
 // indentEnd: the block ends before the next non-blank line that is
@@ -513,15 +622,29 @@ func indentOf(l string) int {
 }
 
 // findParents sets each symbol's Parent to the innermost symbol whose
-// lines contain it.
+// lines contain it (the nearest one before it).
 func findParents(syms []Symbol) {
+	contains := func(j, i int) bool {
+		return syms[j].Line < syms[i].Line && syms[j].End >= syms[i].End && syms[j].End > syms[j].Line
+	}
+	furthest := 0 // the last line of any symbol so far
 	for i := range syms {
-		for j := i - 1; j >= 0; j-- {
-			if syms[j].Line < syms[i].Line && syms[j].End >= syms[i].End && syms[j].End > syms[j].Line {
-				syms[i].Parent = j
-				break
+		if furthest >= syms[i].End {
+			// Blocks nest, so it is the symbol before it or one of that one's
+			// parents, which is quick even with thousands of siblings. Only
+			// ends that overlap (a miscounted brace) need the long way.
+			for j := i - 1; j >= 0 && syms[i].Parent < 0; j = syms[j].Parent {
+				if contains(j, i) {
+					syms[i].Parent = j
+				}
+			}
+			for j := i - 1; j >= 0 && syms[i].Parent < 0; j-- {
+				if contains(j, i) {
+					syms[i].Parent = j
+				}
 			}
 		}
+		furthest = max(furthest, syms[i].End)
 	}
 }
 

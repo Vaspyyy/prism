@@ -9,7 +9,7 @@ c/buffer.h
   2-2 define BUFFER_H c/buffer.h:BUFFER_H | #define BUFFER_H
   4-4 struct buffer c/buffer.h:buffer | struct buffer;
 cpp/separators.cpp
-  2-5 func big cpp/separators.cpp:big | int big(int x)
+  2-7 func big cpp/separators.cpp:big | int big(int x)
   9-11 func quote cpp/separators.cpp:quote | char quote()
   13-15 func after cpp/separators.cpp:after | int after()
 cpp/shape.cpp
@@ -18,8 +18,9 @@ cpp/shape.cpp
   21-23 func square cpp/shape.cpp:square | double square(double x)
   31-33 func main cpp/shape.cpp:main | int main(int argc, char **argv)
 csharp/RawQuotes.cs
-  3-17 class Quotes csharp/RawQuotes.cs:Quotes | public class Quotes
-  7-17 method Quotes.NotAMethod csharp/RawQuotes.cs:Quotes.NotAMethod | public void NotAMethod()
+  3-13 class Quotes csharp/RawQuotes.cs:Quotes | public class Quotes
+  10-12 method Quotes.Real2 csharp/RawQuotes.cs:Quotes.Real2 | public void Real2()
+  15-17 interface IAfter csharp/RawQuotes.cs:IAfter | public interface IAfter
 csharp/Store.cs
   3-22 class Store csharp/Store.cs:Store | public class Store
   13-16 method Store.Add csharp/Store.cs:Store.Add | public void Add(string item)
@@ -59,11 +60,17 @@ js/app.js
   47-49 method save js/app.js:save | save: (v) =>
   52-54 function main js/app.js:main | export default function main()
 js/bundle.js
+  5-7 function licensed js/bundle.js:licensed | function licensed(r)
   9-15 const prefixed js/bundle.js:prefixed | const prefixed = (t) => names.includes(t) ? "__" + t : t, options =
   11-13 method prefixed.tagValueProcessor js/bundle.js:prefixed.tagValueProcessor | tagValueProcessor: function(t, e)
   17-17 function after js/bundle.js:after | function after()
+  22-24 function el.saveSettings js/bundle.js:el.saveSettings | el.saveSettings = () =>
 js/nested_template.js
-  21-34 function notAFunction js/nested_template.js:notAFunction | function notAFunction()
+  8-8 function after js/nested_template.js:after | function after()
+  10-14 class Later js/nested_template.js:Later | class Later
+  11-13 method Later.run js/nested_template.js:Later.run | run()
+  24-26 function last js/nested_template.js:last | export function last()
+  34-34 function generate js/nested_template.js:generate | function* generate()
 kotlin/Store.kt
   3-3 class Item kotlin/Store.kt:Item | data class Item(val name: String)
   5-16 class Store kotlin/Store.kt:Store | class Store
@@ -126,19 +133,18 @@ sh/build.sh
 sh/heredoc_tags.sh
   4-6 function calc sh/heredoc_tags.sh:calc | calc()
   8-12 function gen sh/heredoc_tags.sh:gen | gen()
-  10-12 function gen.fake sh/heredoc_tags.sh:gen.fake | fake()
   14-16 function after sh/heredoc_tags.sh:after | after()
 sh/quotes.sh
-  4-7 function count sh/quotes.sh:count | count()
-  11-13 function greet sh/quotes.sh:greet | greet()
+  4-9 function count sh/quotes.sh:count | count()
+  11-15 function greet sh/quotes.sh:greet | greet()
   17-19 function ansi sh/quotes.sh:ansi | ansi()
   21-23 function last sh/quotes.sh:last | last()
 svelte/Counter.svelte
   4-6 function increment svelte/Counter.svelte:increment | function increment()
 ts/expression_bodies.ts
-  2-7 const query ts/expression_bodies.ts:query | const query = (name: string, fields: ReadonlyArray<string>): string =>
+  2-3 const query ts/expression_bodies.ts:query | const query = (name: string, fields: ReadonlyArray<string>): string =>
   9-9 type Route ts/expression_bodies.ts:Route | export type Route = `/$
-  11-11 const multi ts/expression_bodies.ts:multi | export const multi = (rows: string[]) => `
+  11-13 const multi ts/expression_bodies.ts:multi | export const multi = (rows: string[]) => `
   15-17 function after ts/expression_bodies.ts:after | export function after()
 ts/model.ts
   1-3 interface Message ts/model.ts:Message | export interface Message
