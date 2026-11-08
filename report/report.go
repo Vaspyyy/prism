@@ -36,7 +36,7 @@ type Envelope struct {
 	Version   string     `json:"version"`
 	Args      []string   `json:"args"`    // the arguments after the tool's name, as given
 	Repo      Repo       `json:"repo"`    // where paths are relative to
-	Context   *Context   `json:"context"` // what context the tool used; null until tools use context
+	Context   *Context   `json:"context"` // what context the run had and used; null with --no-context
 	Result    any        `json:"result,omitempty"`
 	Error     *Error     `json:"error,omitempty"` // instead of result, when the run failed
 	Links     []Link     `json:"links"`
@@ -54,12 +54,6 @@ type Repo struct {
 	Branch        string `json:"branch,omitempty"`
 	DefaultBranch string `json:"default_branch,omitempty"`
 	Dirty         bool   `json:"dirty"`
-}
-
-// Context is what context a run used (docs/context.md). Tools leave it nil
-// until they use context; the fields grow with that work.
-type Context struct {
-	Applied []string `json:"applied"` // any of "rank", "mark", "fill"
 }
 
 // Symbol is a definition.
@@ -82,6 +76,9 @@ type Location struct {
 	Line int    `json:"line"`
 	Col  int    `json:"col,omitempty"`
 	In   string `json:"in,omitempty"` // ref of the innermost symbol containing the line
+	// Marks are the context marks of the symbol in In: "changed",
+	// "branch", "focus", "failing".
+	Marks []string `json:"marks,omitempty"`
 }
 
 // Link is a relation between two results and how it's known

@@ -29,6 +29,7 @@ github.com/Vaspyyy/prism          (Go, stdlib only, GPL-3.0 like the tools)
 ├── repo/      repo root, worktree, git dir, HEAD, branch, default branch, path handling
 ├── changes/   changed line ranges -> changed symbols (light; recap keeps its rich analysis)
 ├── focus/     the small amount of remembered context (per worktree, per agent session)
+├── work/      one run's context: loads changes and focus, gives marks, the context: line, the JSON context
 ├── evidence/  link types, basis levels and the wording each basis allows
 ├── testcmd/   build a test command for a set of test refs (go test -run, pytest, cargo test)
 └── report/    the JSON envelope and shared objects (Symbol, Location, Link, Next)

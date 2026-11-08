@@ -4,7 +4,7 @@ Context is what the tools know about the repo and the current work beyond the ar
 
 The risks of automatic context (stale state, agents overwriting each other, runs that can't be reproduced) are handled by the tools themselves, with the rules below.
 
-Owned by `prism/repo`, `prism/changes` and `prism/focus`.
+Owned by `prism/repo`, `prism/changes` and `prism/focus`; `prism/work` loads them together for a run and turns them into marks, the `context:` line and the JSON `context`.
 
 ## Three layers
 
@@ -29,6 +29,8 @@ Computed fresh on every run by `prism/changes`, from git:
 
 Derived context can't go stale and can't collide between agents, because it isn't stored. **Most context should be derived.** Only store what can't be.
 
+What it costs (measured 2026-11-08): about 5 ms on a typical repo. In a 31,000-file repo it costs what `git status` costs there, about 60 ms, nearly all of it listing untracked files. The changed files come from one `git status`, which, like any `git status` run in the foreground, writes a refreshed index back when nothing else holds the index lock. With a stale index (file times changed, contents not) the first run pays the refresh once, 2 s in that repo, instead of every run paying 0.6 s. The line diffs that map changes to symbols only look at the changed files, and nothing runs when nothing changed.
+
 ### 3. Remembered: focus and last run
 
 Two small records that can't be derived from git:
@@ -41,7 +43,7 @@ Two small records that can't be derived from git:
 1. **Explicit wins.** A revision, path or ref given on the command line always beats context. Context only fills what the command left open.
 2. **Rank, mark, fill. Never hide.** Context may reorder results, mark them, and fill a result that would otherwise be empty. It never drops a result that would have appeared without context. A wrong guess costs ordering, never a missed hit.
 3. **Fill only what's empty, and say so.** Example: `recap --show List` finds nothing changed in the working tree, but `List` changed in the focus commit, so recap shows that and says `context: nothing matches in the working tree; showing focus commit b681ef1`.
-4. **Say what was used.** Whenever context changed anything, the text report has one `context:` line and the JSON has `context.applied`. Runs stay reproducible from the output alone: anyone can repeat one with the stated revision.
+4. **Say what was used.** Whenever context changed anything, the text report has one `context:` line and the JSON has `context.applied`. Runs stay reproducible from the output alone: anyone can repeat one with the stated revision. The line names only the layers whose marks the report shows, then any notes (such as a fill-in), for example `context: 1 changed symbol vs HEAD; focus: commit b681ef1 (recap, 4 min ago); last run: crux go test ./... failed (2 min ago)`.
 5. **Stay fast.** Context may add about 50 ms on a typical repo. When it would cost more (for example more than 200 changed files), the tool skips the expensive part and says so: `context: 812 changed files, symbol detail skipped`.
 6. **Safe with parallel agents.** Derived context is per run. Remembered context is per worktree and per agent session (below), written atomically, and expires.
 
@@ -57,7 +59,7 @@ Two small records that can't be derived from git:
 ## Storage of remembered context
 
 - Location: `$(git rev-parse --git-dir)/prism/`. Inside the git dir, so it's never committed, and per worktree, so fix work in a separate worktree has its own context.
-- Files: `focus.json` and `last-run.json`, or `focus-<session>.json` and `last-run-<session>.json` when a session is known.
+- Files: `focus.json` and `last-run.json`, or `focus-<hash>.json` and `last-run-<hash>.json` when a session is known (`<hash>` is the first 12 hex digits of the session's SHA-256, so any session string makes a short, safe name).
 - Each record carries `by` (tool), `at` (time), `head` (HEAD when written) and `session`.
 - Written atomically (temp file plus rename). Concurrent writers: last one wins, which is harmless because of rule 2.
 - Expires 60 minutes after it was last written or read, or when the branch changes. An expired record is ignored and deleted.
@@ -74,7 +76,7 @@ Further harness variables get added once they're confirmed on a real run, not gu
 
 ## Turning it off
 
-`--no-context` on every tool, or `PRISM_NO_CONTEXT=1`, gives output that depends only on the arguments and the files. It's meant for the tools' own golden tests and for scripts that diff outputs. No one should need it to get correct results.
+`--no-context` on every tool, or `PRISM_NO_CONTEXT=1` (any value but empty or `0`), gives output that depends only on the arguments and the files. Nothing is read or written: recap doesn't set focus and crux doesn't record its run. The JSON `context` is `null`. It's meant for the tools' own golden tests and for scripts that diff outputs. No one should need it to get correct results.
 
 ## What context never does
 

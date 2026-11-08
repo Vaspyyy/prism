@@ -222,6 +222,7 @@ type GlintEntry struct {
 	Peek       string       `json:"peek,omitempty"`
 	Commit     *GlintCommit `json:"last_commit,omitempty"`
 	Error      string       `json:"error,omitempty"`
+	Marks      []string     `json:"marks,omitempty"` // context marks of a file: "changed", "branch"
 	Children   []GlintEntry `json:"children,omitempty"`
 }
 
