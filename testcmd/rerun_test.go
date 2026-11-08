@@ -112,6 +112,102 @@ func TestRerunGo(t *testing.T) {
 	rerun(t, root, root, "go test ./...", nil, "")
 }
 
+func TestRerunGoSubtests(t *testing.T) {
+	// a module whose go.mod has goLine ("" for none)
+	fixture := func(goLine string) string {
+		root := t.TempDir()
+		write(t, root, "go.mod", "module x\n"+goLine)
+		write(t, root, "a/a_test.go", "package a\n\nfunc TestA(t *testing.T) {}\n\nfunc TestB(t *testing.T) {}\n")
+		write(t, root, "b/b_test.go", "package b\n\nfunc TestA(t *testing.T) {}\n\nfunc TestC(t *testing.T) {}\n")
+		return root
+	}
+	a := ref.Target{Path: "a/a_test.go", Name: "TestA", Kind: "func"}
+	b := ref.Target{Path: "a/a_test.go", Name: "TestB", Kind: "func"}
+	bA := ref.Target{Path: "b/b_test.go", Name: "TestA", Kind: "func"}
+	bC := ref.Target{Path: "b/b_test.go", Name: "TestC", Kind: "func"}
+	f := func(t ref.Target, printed string) Failed { return Failed{Target: t, Printed: printed} }
+	root := fixture("\ngo 1.22\n")
+	check := func(want string, n int, caveat string, failed ...Failed) {
+		t.Helper()
+		c := rerunF(t, root, root, "go test -v ./...", failed, want)
+		if want != "" && (c.Tests != n || c.Caveat != caveat) {
+			t.Errorf("%s: %d tests, caveat %q; want %d, %q", want, c.Tests, c.Caveat, n, caveat)
+		}
+	}
+
+	// failed subtests as go test printed them, each level quoted
+	check(`go test -v -run '^TestA$/^bad$' ./a/`, 1, "", f(a, "TestA/bad"))
+	check(`go test -v -run '^TestA$/^a\+b\(c\)\[1\]\|x\.\*$' ./a/`, 1, "", f(a, "TestA/a+b(c)[1]|x.*"))
+	check(`go test -v -run '^TestA$/^(bad|bad#01|with_space)$' ./a/`, 3, "",
+		f(a, "TestA/with_space"), f(a, "TestA/bad"), f(a, "TestA/bad#01"), f(a, "TestA/bad"))
+	check(`go test -v -run '^TestA$/^outer$/^(deep|inner)$' ./a/`, 2, "", f(a, "TestA/outer/inner"), f(a, "TestA/outer/deep"))
+	check(`go test -v -run '^TestA$/^a\+b$/^in$' ./a/`, 1, "", f(a, "TestA/a+b/in"))
+	check(`go test -v -run '^TestA$/^bad$' ./a/ ./b/`, 2, "", f(a, "TestA/bad"), f(bA, "TestA/bad"))
+	// tests: as before, with or without the printed name
+	check(`go test -v -run '^TestA$' ./a/`, 1, "", f(a, ""))
+	check(`go test -v -run '^(TestA|TestB)$' ./a/`, 2, "", f(a, "TestA"), f(b, "TestB"))
+	// other parents and depths: alternatives
+	check(`go test -v -run '^TestA$/^bad$|^TestB$/^bad$' ./a/`, 2, "", f(a, "TestA/bad"), f(b, "TestB/bad"))
+	check(`go test -v -run '^TestA$/^bad$|^TestB$/^x$/^y$' ./a/`, 2, "", f(b, "TestB/x/y"), f(a, "TestA/bad"))
+	check(`go test -v -run '^TestA$/^bad$|^TestA$/^outer$/^inner$' ./a/`, 2, "", f(a, "TestA/bad"), f(a, "TestA/outer/inner"))
+	check(`go test -v -run '^TestA$/^x$/^inner$|^TestA$/^y$/^inner$' ./a/`, 2, "", f(a, "TestA/x/inner"), f(a, "TestA/y/inner"))
+	check(`go test -v -run '^TestA$/^bad$|^TestB$' ./a/`, 2, "", f(a, "TestA/bad"), f(b, "TestB"))
+	// a test that failed on its own as well as through a subtest reruns whole
+	passA := "also reruns passing subtests of TestA"
+	check(`go test -v -run '^TestA$' ./a/`, 2, passA, f(a, "TestA"), f(a, "TestA/bad"))
+	check(`go test -v -run '^TestA$/^outer$' ./a/`, 2, "also reruns passing subtests of TestA/outer", f(a, "TestA/outer"), f(a, "TestA/outer/inner"))
+	check(`go test -v -run '^TestA$|^TestB$/^x$' ./a/`, 3, passA, f(a, "TestA/bad"), f(b, "TestB/x"), f(a, "TestA"))
+	// -run applies to every package: another package's test of the same name
+	sameName := "also runs tests of the same name in the other packages"
+	check(`go test -v -run '^TestA$/^(bad|worse)$' ./a/ ./b/`, 2, sameName, f(a, "TestA/bad"), f(bA, "TestA/worse"))
+	check(`go test -v -run '^TestA$/^bad$|^TestC$/^bad$' ./a/ ./b/`, 2, sameName, f(a, "TestA/bad"), f(bC, "TestC/bad"))
+	check(`go test -v -run '^TestA$|^TestC$/^bad$' ./a/ ./b/`, 3, passA+"; "+sameName, f(a, "TestA"), f(a, "TestA/bad"), f(bC, "TestC/bad"))
+	check(`go test -v -run '^TestA$/^x$' ./a/ ./b/`, 2, "also reruns passing subtests of TestA/x", f(a, "TestA/x/y"), f(bA, "TestA/x"))
+
+	// a printed name that isn't the test or one of its subtests
+	for _, p := range []string{"TestB/bad", "TestAB/bad", "TestA/", "TestA//bad", "/TestA"} {
+		check("", 0, "", f(a, p))
+	}
+
+	// a module that allows a go before 1.18, whose -run doesn't split on |:
+	// one group as above, else the parent tests, which the caveat says
+	for _, goLine := range []string{"", "\ngo 1.17\n", "go 1.16 // old\n"} {
+		root = fixture(goLine)
+		check(`go test -v -run '^TestA$/^(bad|with_space)$' ./a/`, 2, "", f(a, "TestA/bad"), f(a, "TestA/with_space"))
+		check(`go test -v -run '^TestA$/^outer$' ./a/`, 2, "also reruns passing subtests of TestA/outer", f(a, "TestA/outer"), f(a, "TestA/outer/inner"))
+		check(`go test -v -run '^(TestA|TestB)$' ./a/`, 2, "also reruns passing subtests of TestA and TestB", f(a, "TestA/bad"), f(b, "TestB/bad"))
+		check(`go test -v -run '^(TestA|TestB)$' ./a/`, 2, passA, f(a, "TestA/bad"), f(b, "TestB"))
+		check(`go test -v -run '^TestA$' ./a/`, 2, passA, f(a, "TestA/bad"), f(a, "TestA/outer/inner"))
+		check(`go test -v -run '^(TestA|TestB)$' ./a/`, 3, "also reruns passing subtests of TestA and TestB", f(a, "TestA"), f(a, "TestA/outer/x"), f(b, "TestB/y"))
+		check(`go test -v -run '^(TestA|TestC)$' ./a/ ./b/`, 2, "also reruns passing subtests of TestA and TestC; "+sameName, f(a, "TestA/bad"), f(bC, "TestC/bad"))
+	}
+}
+
+func TestGoAlternates(t *testing.T) {
+	for _, c := range []struct {
+		gomod string
+		want  bool
+	}{
+		{"module x\n\ngo 1.18\n", true},
+		{"module x\n\ngo 1.21.0\n\ntoolchain go1.22.1\n", true},
+		{"module x\ngo 1.26rc1 // next\n", true},
+		{"module x\n\ngo 1.17\n", false},
+		{"module x\n\ngo 1.9\n", false},
+		{"module x\n", false},
+		{"module x\n// go 1.22\n", false},
+		{"module x\ngo 2.0\n", false},
+	} {
+		dir := t.TempDir()
+		write(t, dir, "go.mod", c.gomod)
+		if got := goAlternates(dir); got != c.want {
+			t.Errorf("goAlternates(%q) = %v", c.gomod, got)
+		}
+	}
+	if goAlternates(t.TempDir()) {
+		t.Error("no go.mod: alternates")
+	}
+}
+
 func TestRerunPytest(t *testing.T) {
 	root := t.TempDir()
 	deep := ref.Target{Path: "tests/test_shop.py", Name: "TestShop.TestInner.test_deep", Kind: "def"}
