@@ -65,6 +65,7 @@ js/bundle.js
   11-13 method prefixed.tagValueProcessor js/bundle.js:prefixed.tagValueProcessor | tagValueProcessor: function(t, e)
   17-17 function after js/bundle.js:after | function after()
   22-24 function el.saveSettings js/bundle.js:el.saveSettings | el.saveSettings = () =>
+  29-31 function window.saveSettings js/bundle.js:window.saveSettings | window.saveSettings = () =>
 js/nested_template.js
   8-8 function after js/nested_template.js:after | function after()
   10-14 class Later js/nested_template.js:Later | class Later
@@ -125,6 +126,9 @@ rust/lib.rs
 scala/Store.scala
   3-10 class Store scala/Store.scala:Store#1 | class Store
   12-14 object Store scala/Store.scala:Store#2 | object Store
+sh/apostrophes.sh
+  4-18 function usage sh/apostrophes.sh:usage | usage()
+  20-27 function clean sh/apostrophes.sh:clean | clean()
 sh/build.sh
   3-9 function usage sh/build.sh:usage | usage()
   11-13 function clean sh/build.sh:clean | function clean
@@ -154,9 +158,12 @@ ts/model.ts
   20-22 method Model.add ts/model.ts:Model.add | add(m: Message): void
   24-26 method Model.size ts/model.ts:Model.size | get size(): number
   33-35 function load ts/model.ts:load | export async function load(id: Id): Promise<Message>
+ts/shortcuts.tsx
+  2-14 function Shortcuts ts/shortcuts.tsx:Shortcuts | export function Shortcuts()
 ts/view.tsx
   3-8 function View ts/view.tsx:View | export function View(props:
   10-12 const Item ts/view.tsx:Item | export const Item = (
+vue/Help.vue
 vue/List.vue
   10-12 method data vue/List.vue:data | data()
   15-17 function sortItems vue/List.vue:sortItems | function sortItems(items)

@@ -24,3 +24,9 @@ const view = html`
 		};
 	})}
 `;
+
+const inject = `(${String(() => {
+	window.saveSettings = () => {
+		return true;
+	};
+})})()`;
