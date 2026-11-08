@@ -71,7 +71,10 @@
         ],
         "outside": {
           "added": 1,
-          "removed": 0
+          "removed": 0,
+          "lines": [
+            "+var debug = false"
+          ]
         }
       }
     ]

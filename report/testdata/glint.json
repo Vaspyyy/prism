@@ -22,6 +22,8 @@
       "path": "internal/files/files.go",
       "lines": 272,
       "size": 7000,
+      "modified": "2026-11-08T05:56:00+01:00",
+      "git": "modified",
       "symbols": [
         {
           "ref": "internal/files/files.go:List",
