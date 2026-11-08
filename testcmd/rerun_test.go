@@ -11,6 +11,16 @@ import (
 // rerun checks Rerun from cwd: want "" means no command.
 func rerun(t *testing.T, root, cwd, argv string, failed []ref.Target, want string) Cmd {
 	t.Helper()
+	fs := make([]Failed, len(failed))
+	for i, f := range failed {
+		fs[i] = Failed{Target: f}
+	}
+	return rerunF(t, root, cwd, argv, fs, want)
+}
+
+// rerunF is rerun with the names the runner printed.
+func rerunF(t *testing.T, root, cwd, argv string, failed []Failed, want string) Cmd {
+	t.Helper()
 	c, ok := Rerun(root, cwd, strings.Fields(argv), failed)
 	got := ""
 	if ok {
@@ -51,6 +61,16 @@ func TestRerunGo(t *testing.T) {
 		`go test -count 1 --race -skip TestSlow -run '^TestList$' ./internal/files/`)
 	// what follows -args goes to the test binary as is
 	rerun(t, root, root, "go test ./... -args -update -v", one, `go test -run '^TestList$' ./internal/files/ -args -update -v`)
+	rerun(t, root, root, "go test ./... -- -update", one, `go test -run '^TestList$' ./internal/files/ -- -update`)
+	// go test's rule: a word after the packages and a flag goes to the test
+	// binary with all that follows, so it isn't a package
+	rerun(t, root, root, "go test ./internal/group -v ./internal/files -race", one,
+		`go test -v -run '^TestList$' ./internal/files/ -args ./internal/files -race`)
+	rerun(t, root, root, "go test ./internal/group -count 1 ./internal/files", one,
+		`go test -count 1 -run '^TestList$' ./internal/files/ -args ./internal/files`)
+	rerun(t, root, root, "go test -v ./internal/group ./internal/files", one, `go test -v -run '^TestList$' ./internal/files/`)
+	// the runner as given
+	rerun(t, root, root, "/usr/lib/go-1.21/bin/go test -race ./...", one, `/usr/lib/go-1.21/bin/go test -race -run '^TestList$' ./internal/files/`)
 	// several tests and packages, with the same-name caveat
 	c = rerun(t, root, root, "go test -v ./...", []ref.Target{list, other, group},
 		`go test -v -run '^(TestGroup|TestList|TestOther)$' ./internal/files/ ./internal/group/`)
@@ -98,6 +118,7 @@ func TestRerunPytest(t *testing.T) {
 	closeT := ref.Target{Path: "tests/test_shop.py", Name: "test_close", Kind: "def"}
 	one := []ref.Target{closeT}
 
+	write(t, root, "tests/test_shop.py", "def test_close():\n    pass\n")
 	c := rerun(t, root, root, "pytest -x -k smoke --tb=short tests/", one, "pytest -x -k smoke --tb=short tests/test_shop.py::test_close")
 	if c.Tests != 1 || c.Caveat != "" {
 		t.Errorf("one test: %+v", c)
@@ -121,16 +142,18 @@ func TestRerunPytest(t *testing.T) {
 	rerun(t, root, root, "/usr/bin/python3.12 -m pytest", one, "/usr/bin/python3.12 -m pytest tests/test_shop.py::test_close")
 
 	for _, argv := range []string{
-		"pytest --co tests",      // collects, doesn't run
-		"pytest --collect-only",  //
-		"pytest --sw tests",      // stepwise skips to the last failure
-		"pytest --pyargs shop",   // packages, not paths
-		"pytest -h",              //
-		"pytest --frob x tests",  // unknown: is x its value or a path?
-		"pytest -z tests",        //
-		"pytest -xz tests",       //
-		"pytest tests --maxfail", // no value
-		"pytest --lf=1 tests",    // a flag with a value
+		"pytest --co tests",                           // collects, doesn't run
+		"pytest --collect-only",                       //
+		"pytest --sw tests",                           // stepwise skips to the last failure
+		"pytest --pyargs shop",                        // packages, not paths
+		"pytest -h",                                   //
+		"pytest --frob x tests",                       // unknown: is x its value or a path?
+		"pytest -z tests",                             //
+		"pytest -xz tests",                            //
+		"pytest tests --maxfail",                      // no value
+		"pytest --lf=1 tests",                         // a flag with a value
+		"pytest -q tests/test_shop.py::test_close[2]", // one parametrization: the rerun would run them all
+		"pytest -- tests/test_shop.py::test_close[2]",
 		"python -X dev -m pytest",
 		"python -m unittest",
 		"python3 -m pytest_cov",
@@ -138,15 +161,100 @@ func TestRerunPytest(t *testing.T) {
 		rerun(t, root, root, argv, one, "")
 	}
 	rerun(t, root, root, "pytest", []ref.Target{{Path: "a/a_test.go", Name: "TestA", Kind: "func"}}, "")
+
+	// the parametrization pytest printed is the one rerun
+	p2 := Failed{Target: closeT, Printed: "tests/test_shop.py::test_close[2]"}
+	p3 := Failed{Target: closeT, Printed: "test_shop.py::test_close[3-a::b]"}
+	if c := rerunF(t, root, root, "pytest tests", []Failed{p2, p3}, "pytest 'tests/test_shop.py::test_close[2]' 'tests/test_shop.py::test_close[3-a::b]'"); c.Tests != 2 {
+		t.Errorf("two parametrizations: %+v", c)
+	}
+	rerunF(t, root, root, "pytest tests", []Failed{{Target: closeT, Printed: "tests/test_shop.py::test_close"}}, "pytest tests/test_shop.py::test_close")
+	for _, printed := range []string{"tests/test_shop.py::TestShop::test_close", "tests/test_shop.py::test_closed", "tests/test_shop.py::test_close[2"} {
+		rerunF(t, root, root, "pytest tests", []Failed{{Target: closeT, Printed: printed}}, "") // another test's id
+	}
+}
+
+// TestRerunPytestConfig: the rerun settles on the run's config file and
+// rootdir, which pytest finds from the paths it's given.
+func TestRerunPytestConfig(t *testing.T) {
+	root := t.TempDir()
+	write(t, root, "pyproject.toml", "[tool.pytest.ini_options]\naddopts = \"-p no:cacheprovider\"\n")
+	write(t, root, "packages/foo/pyproject.toml", "[project]\nname = \"foo\"\n\n[tool.pytest.ini_options]\naddopts = \"--strict-markers\"\n")
+	write(t, root, "packages/foo/tests/test_x.py", "def test_a():\n    assert False\n")
+	write(t, root, "packages/bar/tests/test_y.py", "def test_b():\n    assert False\n")
+	a := []ref.Target{{Path: "packages/foo/tests/test_x.py", Name: "test_a", Kind: "def"}}
+	foo := filepath.Join(root, "packages", "foo")
+
+	// from the root without paths the run used the root's config; the node
+	// id alone would make pytest use packages/foo's
+	rerun(t, root, root, "pytest -x", a, "pytest -x -c pyproject.toml packages/foo/tests/test_x.py::test_a")
+	rerun(t, root, root, "pytest packages", a, "pytest -c pyproject.toml packages/foo/tests/test_x.py::test_a")
+	rerun(t, root, filepath.Join(root, "packages"), "pytest", a, "pytest -c ../pyproject.toml foo/tests/test_x.py::test_a")
+	// the same config either way: nothing to pin
+	rerun(t, root, root, "pytest packages/foo/tests", a, "pytest packages/foo/tests/test_x.py::test_a")
+	rerun(t, root, foo, "pytest", a, "pytest tests/test_x.py::test_a")
+	rerun(t, root, root, "pytest -c pyproject.toml", a, "pytest -c pyproject.toml packages/foo/tests/test_x.py::test_a")
+	rerun(t, root, root, "pytest --rootdir=. packages", a, "pytest --rootdir=. -c pyproject.toml packages/foo/tests/test_x.py::test_a")
+	// a plugin's option value counts as a path when pytest picks its config
+	rerun(t, root, root, "pytest --cov packages/foo", a, "pytest --cov packages/foo packages/foo/tests/test_x.py::test_a")
+	rerun(t, root, root, "pytest --cov=packages/foo", a, "pytest --cov=packages/foo -c pyproject.toml packages/foo/tests/test_x.py::test_a")
+
+	// without config files, a setup.py marks the rootdir
+	bare := t.TempDir()
+	write(t, bare, "a/setup.py", "")
+	write(t, bare, "a/test_x.py", "def test_a():\n    assert False\n")
+	write(t, bare, "b/test_y.py", "def test_b():\n    assert False\n")
+	rerun(t, bare, bare, "pytest a b", []ref.Target{{Path: "a/test_x.py", Name: "test_a", Kind: "def"}}, "pytest --rootdir . a/test_x.py::test_a")
+	// the run had no config file and the rerun would: no way to pin that
+	write(t, bare, "b/pytest.ini", "[pytest]\n")
+	rerun(t, bare, bare, "pytest", []ref.Target{{Path: "b/test_y.py", Name: "test_b", Kind: "def"}}, "")
+	// (with both paths given, pytest searched b too and found it)
+	rerun(t, bare, bare, "pytest a b", []ref.Target{{Path: "b/test_y.py", Name: "test_b", Kind: "def"}}, "pytest b/test_y.py::test_b")
+}
+
+func TestPyprojectConfig(t *testing.T) {
+	for src, want := range map[string][2]bool{
+		"[tool.pytest.ini_options]\n":                         {true, true},
+		"[tool.pytest]\nminversion = \"9\"\n":                 {true, true},
+		"[ tool . \"pytest\" . ini_options ] # x\n":           {true, true},
+		"[tool.pytest]\n\n[tool.ruff]\nx = 1\n":               {false, true}, // empty
+		"[tool.pytest-watcher]\nnow = true\n":                 {false, true},
+		"[project]\ndependencies = [\"pytest\"]\n":            {false, true},
+		"x = \"\"\"\n[tool.pytest.ini_options]\n\"\"\"\n":     {false, true}, // in a string
+		"# [tool.pytest.ini_options]\n":                       {false, true},
+		"tool.pytest.ini_options.addopts = \"-x\"\n":          {false, false},
+		"[tool]\npytest.ini_options = { addopts = \"-x\" }\n": {false, false},
+	} {
+		if has, ok := pyprojectConfig([]byte(src)); has != want[0] || ok != want[1] {
+			t.Errorf("pyprojectConfig(%q) = %v, %v", src, has, ok)
+		}
+	}
+}
+
+// rustTests is a Rust file with #[test] functions, at the top or in a
+// tests module ("tests.parses").
+func rustTests(names ...string) string {
+	var top, mod strings.Builder
+	for _, n := range names {
+		if m, ok := strings.CutPrefix(n, "tests."); ok {
+			mod.WriteString("    #[test]\n    fn " + m + "() {}\n")
+		} else {
+			top.WriteString("#[test]\nfn " + n + "() {}\n")
+		}
+	}
+	return top.String() + "#[cfg(test)]\nmod tests {\n" + mod.String() + "}\n"
 }
 
 func TestRerunCargo(t *testing.T) {
 	root := t.TempDir()
 	write(t, root, "Cargo.toml", "[workspace]\nmembers = [\"crates/a\", \"crates/b\"]\n")
 	write(t, root, "crates/a/Cargo.toml", "[package]\nname = \"a\"\n")
-	write(t, root, "crates/a/src/lib.rs", "")
+	write(t, root, "crates/a/src/lib.rs", "mod group;\n"+rustTests("tests.parses"))
+	write(t, root, "crates/a/src/group/mod.rs", rustTests("tests.groups"))
+	write(t, root, "crates/a/tests/cli/main.rs", "mod args;\n"+rustTests("runs"))
+	write(t, root, "crates/a/tests/cli/args.rs", rustTests("parses"))
 	write(t, root, "crates/b/Cargo.toml", "[package]\nname = \"b\"\n")
-	write(t, root, "crates/b/src/lib.rs", "")
+	write(t, root, "crates/b/src/lib.rs", rustTests("tests.parses"))
 	parses := ref.Target{Path: "crates/a/src/lib.rs", Name: "tests.parses", Kind: "fn"}
 	groups := ref.Target{Path: "crates/a/src/group/mod.rs", Name: "tests.groups", Kind: "fn"}
 	bTest := ref.Target{Path: "crates/b/src/lib.rs", Name: "tests.parses", Kind: "fn"}
@@ -168,20 +276,41 @@ func TestRerunCargo(t *testing.T) {
 	if c.Caveat != "" {
 		t.Errorf("one target: %+v", c)
 	}
-	// a test with the same path may run in another crate or target
-	if c := rerun(t, root, root, "cargo test --workspace", []ref.Target{parses, bTest}, "cargo test --workspace -- --exact tests::parses"); c.Caveat == "" || c.Tests != 1 {
+	// the runner as given
+	rerun(t, root, a, "/home/u/.cargo/bin/cargo test", []ref.Target{parses}, "/home/u/.cargo/bin/cargo test -- --exact tests::parses")
+
+	// the same path failing in two crates is two tests, and nothing else runs
+	if c := rerun(t, root, root, "cargo test --workspace", []ref.Target{parses, bTest}, "cargo test --workspace -- --exact tests::parses"); c.Caveat != "" || c.Tests != 2 {
 		t.Errorf("two crates: %+v", c)
 	}
-	if c := rerun(t, root, a, "cargo test", append([]ref.Target{parses}, cli...), "cargo test -- --exact args::parses runs tests::parses"); c.Caveat == "" {
-		t.Errorf("two targets: %+v", c)
+	// but where only one failed, the other crate's runs too: with
+	// --workspace, from the virtual root, not with -p
+	for _, argv := range []string{"cargo test --workspace", "cargo test", "cargo test --all --lib"} {
+		if c := rerun(t, root, root, argv, []ref.Target{parses}, argv+" -- --exact tests::parses"); c.Caveat == "" {
+			t.Errorf("%s: b's tests::parses runs too, unsaid", argv)
+		}
 	}
-	write(t, root, "crates/a/src/main.rs", "")
+	if c := rerun(t, root, root, "cargo test -p a", []ref.Target{parses}, "cargo test -p a -- --exact tests::parses"); c.Caveat != "" {
+		t.Errorf("-p a: caveat %q", c.Caveat)
+	}
+	if c := rerun(t, root, root, "cargo test --workspace", []ref.Target{groups}, "cargo test --workspace -- --exact group::tests::groups"); c.Caveat != "" {
+		t.Errorf("a path only a has: caveat %q", c.Caveat)
+	}
+	// a library and integration tests: a caveat only where a path repeats
+	if c := rerun(t, root, a, "cargo test", append([]ref.Target{parses}, cli...), "cargo test -- --exact args::parses runs tests::parses"); c.Caveat != "" {
+		t.Errorf("lib + cli: caveat %q", c.Caveat)
+	}
+	write(t, root, "crates/a/tests/cli/tests.rs", rustTests("parses"))
 	if c := rerun(t, root, a, "cargo test", []ref.Target{parses}, "cargo test -- --exact tests::parses"); c.Caveat == "" {
-		t.Error("lib + main: no caveat")
+		t.Error("cli's tests::parses runs too, unsaid")
 	}
 	if c := rerun(t, root, a, "cargo test --lib", []ref.Target{parses}, "cargo test --lib -- --exact tests::parses"); c.Caveat != "" {
 		t.Errorf("--lib: caveat %q", c.Caveat)
 	}
+	// a target the command doesn't build: the run couldn't have run the test
+	rerun(t, root, a, "cargo test --lib", cli[:1], "")
+	rerun(t, root, a, "cargo test --test other", []ref.Target{parses}, "")
+	rerun(t, root, a, "cargo test -p b", []ref.Target{parses}, "")
 
 	for _, argv := range []string{
 		"cargo test --doc", // doctests only
@@ -200,14 +329,121 @@ func TestRerunCargo(t *testing.T) {
 	rerun(t, root, a, "cargo test", []ref.Target{{Path: "x/a_test.go", Name: "TestA", Kind: "func"}}, "")
 }
 
+// TestRerunCargoTargets: a library and binaries can hold the same path, so
+// only a selection of one of them is exact.
+func TestRerunCargoTargets(t *testing.T) {
+	root := t.TempDir()
+	write(t, root, "Cargo.toml", "[package]\nname = \"app\"\n")
+	write(t, root, "src/lib.rs", "mod util;\n"+rustTests("tests.works"))
+	write(t, root, "src/util.rs", rustTests("tests.helps"))
+	write(t, root, "src/main.rs", "fn main() {}\n"+rustTests("tests.works"))
+	write(t, root, "src/bin/tool.rs", "fn main() {}\n"+rustTests("tests.works", "tests.tool"))
+	lib := ref.Target{Path: "src/lib.rs", Name: "tests.works", Kind: "fn"}
+	util := ref.Target{Path: "src/util.rs", Name: "tests.helps", Kind: "fn"}
+	tool := ref.Target{Path: "src/bin/tool.rs", Name: "tests.works", Kind: "fn"}
+	toolOnly := ref.Target{Path: "src/bin/tool.rs", Name: "tests.tool", Kind: "fn"}
+
+	for argv, caveat := range map[string]bool{
+		"cargo test":                     true, // main and tool have tests::works too
+		"cargo test --tests":             true, // still the library and the binaries
+		"cargo test --lib --bins":        true,
+		"cargo test --lib --bin app":     true,
+		"cargo test --all-targets":       true,
+		"cargo test --lib":               false,
+		"cargo test --lib --test x":      false,
+		"cargo test --lib --bin toolbox": false,
+	} {
+		want := argv + " -- --exact tests::works"
+		if c := rerun(t, root, root, argv, []ref.Target{lib}, want); (c.Caveat != "") != caveat {
+			t.Errorf("%s: caveat %q", argv, c.Caveat)
+		}
+	}
+	if c := rerun(t, root, root, "cargo test --lib --bin a*", []ref.Target{lib}, "cargo test --lib --bin 'a*' -- --exact tests::works"); c.Caveat == "" {
+		t.Error("--bin a*: no caveat")
+	}
+	// src/bin/tool.rs is the tool binary's, and only it has tests::tool
+	if c := rerun(t, root, root, "cargo test --bin tool", []ref.Target{tool}, "cargo test --bin tool -- --exact tests::works"); c.Caveat != "" {
+		t.Errorf("--bin tool: caveat %q", c.Caveat)
+	}
+	if c := rerun(t, root, root, "cargo test", []ref.Target{toolOnly}, "cargo test -- --exact tests::tool"); c.Caveat != "" {
+		t.Errorf("tests::tool: caveat %q", c.Caveat)
+	}
+	rerun(t, root, root, "cargo test --lib", []ref.Target{tool}, "")
+	// a module of src/ may be in the library and the main binary both
+	if c := rerun(t, root, root, "cargo test", []ref.Target{util}, "cargo test -- --exact util::tests::helps"); c.Caveat == "" {
+		t.Error("src/util.rs: no caveat")
+	}
+	if c := rerun(t, root, root, "cargo test --lib", []ref.Target{util}, "cargo test --lib -- --exact util::tests::helps"); c.Caveat != "" {
+		t.Errorf("src/util.rs, --lib: caveat %q", c.Caveat)
+	}
+
+	// a library and src/bin/tool.rs alone
+	write(t, root, "src/main.rs", "fn main() {}\n")
+	if c := rerun(t, root, root, "cargo test", []ref.Target{lib}, "cargo test -- --exact tests::works"); c.Caveat == "" {
+		t.Error("tool's tests::works runs too, unsaid")
+	}
+	if c := rerun(t, root, root, "cargo test --bins", []ref.Target{tool}, "cargo test --bins -- --exact tests::works"); c.Caveat != "" {
+		t.Errorf("--bins, only tool has tests::works: caveat %q", c.Caveat)
+	}
+}
+
+// TestRerunCargoPrinted: where the files don't tell a test's path, only
+// the path cargo printed can rerun it.
+func TestRerunCargoPrinted(t *testing.T) {
+	root := t.TempDir()
+	write(t, root, "Cargo.toml", "[package]\nname = \"p\"\n")
+	write(t, root, "src/lib.rs", "#[path = \"parser/imp.rs\"]\nmod parser;\n")
+	write(t, root, "src/parser/imp.rs", rustTests("tests.works"))
+	works := ref.Target{Path: "src/parser/imp.rs", Name: "tests.works", Kind: "fn"}
+
+	rerun(t, root, root, "cargo test", []ref.Target{works}, "") // by file it'd be parser::imp::tests::works
+	c := rerunF(t, root, root, "cargo test", []Failed{{Target: works, Printed: "parser::tests::works"}}, "cargo test -- --exact parser::tests::works")
+	if c.Tests != 1 || c.Caveat != "" {
+		t.Errorf("printed: %+v", c)
+	}
+	rerunF(t, root, root, "cargo test", []Failed{{Target: works, Printed: "parser::tests::other"}}, "") // another test's
+	if cs := For(root, root, []ref.Target{works}); len(cs) != 0 {
+		t.Errorf("For with #[path]: %+v", cs)
+	}
+
+	// a target with its own path
+	custom := t.TempDir()
+	write(t, custom, "Cargo.toml", "[package]\nname = \"c\"\n\n[lib]\npath = \"lib/mod.rs\"\n")
+	write(t, custom, "lib/mod.rs", rustTests("tests.works"))
+	write(t, custom, "src/lib.rs", rustTests("tests.works"))
+	lw := ref.Target{Path: "src/lib.rs", Name: "tests.works", Kind: "fn"}
+	rerun(t, custom, custom, "cargo test", []ref.Target{lw}, "")
+	if cs := For(custom, custom, []ref.Target{lw}); len(cs) != 0 {
+		t.Errorf("For with [lib] path: %+v", cs)
+	}
+
+	// a module of tests/ no target owns: each test that includes it has it
+	shared := t.TempDir()
+	write(t, shared, "Cargo.toml", "[package]\nname = \"s\"\n")
+	write(t, shared, "tests/api.rs", "mod common;\n"+rustTests("api"))
+	write(t, shared, "tests/cli.rs", "mod common;\n"+rustTests("cli"))
+	write(t, shared, "tests/common/mod.rs", rustTests("helper"))
+	helper := ref.Target{Path: "tests/common/mod.rs", Name: "helper", Kind: "fn"}
+	rerun(t, shared, shared, "cargo test", []ref.Target{helper}, "")
+	if c := rerunF(t, shared, shared, "cargo test", []Failed{{Target: helper, Printed: "common::helper"}}, "cargo test -- --exact common::helper"); c.Caveat == "" {
+		t.Error("common::helper: no caveat")
+	}
+	rerunF(t, shared, shared, "cargo test --test api", []Failed{{Target: helper, Printed: "common::helper"}}, "cargo test --test api -- --exact common::helper")
+	api := ref.Target{Path: "tests/api.rs", Name: "api", Kind: "fn"}
+	if cs := For(shared, shared, []ref.Target{helper, api}); len(cs) != 1 || cs[0].String() != "cargo test --test api -- --exact api" || cs[0].Tests != 1 {
+		t.Errorf("For with tests/common: %+v", cs)
+	}
+}
+
 func TestRerunNext(t *testing.T) {
 	root := t.TempDir()
 	write(t, root, "go.mod", "module x\n")
-	n, ok := RerunNext(root, root, []string{"go", "test", "-race", "./..."}, []ref.Target{{Path: "a/a_test.go", Name: "TestA", Kind: "func"}})
+	a := []Failed{{Target: ref.Target{Path: "a/a_test.go", Name: "TestA", Kind: "func"}}}
+	n, ok := RerunNext(root, root, []string{"go", "test", "-race", "./..."}, a)
 	if !ok || n.Cmd != `crux go test -race -run '^TestA$' ./a/` || n.Why != "reruns the 1 failed test" {
 		t.Errorf("RerunNext = %+v, %v", n, ok)
 	}
-	if _, ok := RerunNext(root, root, []string{"make", "test"}, []ref.Target{{Path: "a/a_test.go", Name: "TestA", Kind: "func"}}); ok {
+	if _, ok := RerunNext(root, root, []string{"make", "test"}, a); ok {
 		t.Error("make: a suggestion")
 	}
 }

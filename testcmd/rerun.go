@@ -10,19 +10,30 @@ import (
 	"github.com/Vaspyyy/prism/report"
 )
 
+// Failed is a test that failed in a run.
+type Failed struct {
+	ref.Target // the test, as a symbol IsTest accepts
+
+	// Printed is the test as the runner printed it, if known: cargo's test
+	// path ("parser::tests::works"), pytest's node id
+	// ("tests/test_x.py::test_p[2]"). A cargo rerun selects that path
+	// rather than the one the file's place in the crate gives, and a
+	// pytest rerun that parametrization. Go reruns don't use it.
+	Printed string
+}
+
 // Rerun builds the command that reruns only the failed tests of a run of
 // argv, keeping argv's own flags (-race, -tags, -count=1, -x, --release,
 // --test-threads …): go test, pytest (also python -m pytest) and cargo
 // test. root is the repository root (absolute); cwd is where argv ran and
-// where the rerun will run. failed are the tests that failed, as symbols
-// IsTest accepts.
+// where the rerun will run.
 //
 // ok is false whenever the command can't be exact: another runner, a flag
 // it doesn't know (it can't tell whether the next word is the flag's value
 // or a package), a mode that doesn't just run tests (go test -fuzz, -list,
 // -c; pytest --collect-only, --stepwise; cargo test --doc, --no-run), or
 // failed tests the runner as invoked can't select by name.
-func Rerun(root, cwd string, argv []string, failed []ref.Target) (Cmd, bool) {
+func Rerun(root, cwd string, argv []string, failed []Failed) (Cmd, bool) {
 	if len(argv) == 0 || len(failed) == 0 {
 		return Cmd{}, false
 	}
@@ -34,14 +45,14 @@ func Rerun(root, cwd string, argv []string, failed []ref.Target) (Cmd, bool) {
 	case isPython(name) && len(argv) >= 3 && argv[1] == "-m" && argv[2] == "pytest":
 		return pytestRerun(root, cwd, argv[:3], argv[3:], failed)
 	case name == "cargo":
-		return cargoRerun(root, argv, failed)
+		return cargoRerun(root, cwd, argv, failed)
 	}
 	return Cmd{}, false
 }
 
 // RerunNext is Rerun as a crux suggestion, with the reason worded by
 // execution: "reruns the 2 failed tests".
-func RerunNext(root, cwd string, argv []string, failed []ref.Target) (report.Next, bool) {
+func RerunNext(root, cwd string, argv []string, failed []Failed) (report.Next, bool) {
 	c, ok := Rerun(root, cwd, argv, failed)
 	if !ok {
 		return report.Next{}, false
@@ -55,7 +66,7 @@ func isPython(name string) bool {
 }
 
 // all reports whether every test is in a file with the suffix.
-func all(ts []ref.Target, suffix string) bool {
+func all(ts []Failed, suffix string) bool {
 	for _, t := range ts {
 		if !strings.HasSuffix(t.Path, suffix) {
 			return false
@@ -93,7 +104,7 @@ func set(names ...string) map[string]bool {
 // goRerun: go [-C dir] test <argv's flags> -run '^(A|B)$' <failed packages>
 // [-args …]. Packages and -run are replaced, -bench and -benchtime
 // dropped; argv's packages only tell which module the run was in.
-func goRerun(root, cwd string, argv []string, failed []ref.Target) (Cmd, bool) {
+func goRerun(root, cwd string, argv []string, failed []Failed) (Cmd, bool) {
 	if !all(failed, "_test.go") {
 		return Cmd{}, false
 	}
@@ -113,7 +124,7 @@ func goRerun(root, cwd string, argv []string, failed []ref.Target) (Cmd, bool) {
 		i += 2
 		return true
 	}
-	head = append(head, "go")
+	head = append(head, argv[0])
 	if i < len(argv) && argv[i] == "-C" && !chdir() {
 		return Cmd{}, false
 	}
@@ -126,18 +137,27 @@ func goRerun(root, cwd string, argv []string, failed []ref.Target) (Cmd, bool) {
 		return Cmd{}, false
 	}
 	var flags, after []string
+	inPkgs, seenPkgs := false, false
 	for ; i < len(argv); i++ {
 		a := argv[i]
-		if a == "-args" || a == "--args" {
-			after = argv[i:]
+		if a == "-args" || a == "--args" || a == "--" {
+			after = argv[i:] // to the test binary (with -- itself), as in the run
 			break
 		}
 		if !strings.HasPrefix(a, "-") || a == "-" {
+			if seenPkgs && !inPkgs {
+				// go test's rule: a word after the packages and a flag goes, with
+				// all that follows, to the test binary; -args keeps it there
+				after = append([]string{"-args"}, argv[i:]...)
+				break
+			}
 			if strings.HasSuffix(a, ".go") {
 				return Cmd{}, false // files, not packages: a rerun by package builds something else
 			}
+			inPkgs, seenPkgs = true, true
 			continue // a package: replaced
 		}
+		inPkgs = false
 		name, value, hasValue := strings.Cut(strings.TrimPrefix(strings.TrimPrefix(a, "-"), "-"), "=")
 		if goGiveUp[name] || !goValue[name] && !goBool[name] {
 			return Cmd{}, false
@@ -167,8 +187,10 @@ func goRerun(root, cwd string, argv []string, failed []ref.Target) (Cmd, bool) {
 		}
 	}
 	// one module, which the run could reach from where it ran
+	ts := make([]ref.Target, len(failed))
 	mod := ""
-	for _, t := range failed {
+	for i, t := range failed {
+		ts[i] = t.Target
 		m := up(root, filepath.Dir(filepath.Join(root, filepath.FromSlash(t.Path))), "go.mod", nil)
 		if m == "" || mod != "" && m != mod {
 			return Cmd{}, false
@@ -178,7 +200,7 @@ func goRerun(root, cwd string, argv []string, failed []ref.Target) (Cmd, bool) {
 	if !within(mod, base) && up(root, base, "go.work", nil) == "" {
 		return Cmd{}, false
 	}
-	sel := goSelect(root, failed)
+	sel := goSelect(root, ts)
 	args := append(append(head, flags...), "-run", sel.re)
 	for _, d := range sel.dirs {
 		args = append(args, rel(base, d, true))
@@ -208,37 +230,67 @@ var (
 		"--lf", "--last-failed", "--ff", "--failed-first", "--nf", "--new-first", "--doctest-modules",
 		"--cov-append", "--no-cov", "--no-cov-on-fail")
 	pyOptional = set("--cov") // argparse nargs='?': takes the next word unless it's an option
+	// plugins' options with a value: pytest reads its config before it
+	// loads plugins, and takes a value given as the next word for a path
+	pyPlugin = set("-n", "--numprocesses", "--maxprocesses", "--dist", "--cov-report", "--cov-config",
+		"--cov-fail-under", "--timeout", "--cov")
 )
 
-// pytestRerun: <argv's options> <node ids>. Positional paths become the
-// failed tests' node ids, relative to where pytest runs; -k, -m and the
-// like stay, as the failed tests matched them.
-func pytestRerun(root, cwd string, prefix, args []string, failed []ref.Target) (Cmd, bool) {
+// pytestRerun: <argv's options> [-c <config>] <node ids>. Positional paths
+// become the failed tests' node ids, relative to where pytest runs; -k, -m
+// and the like stay, as the failed tests matched them. Where the node ids
+// would make pytest settle on another config file or rootdir than the run
+// did, -c (or --rootdir) pins the run's.
+func pytestRerun(root, cwd string, prefix, args []string, failed []Failed) (Cmd, bool) {
 	if !all(failed, ".py") {
 		return Cmd{}, false
 	}
 	opts := []string{}
+	var early, plugin []string // what pytest's first parse takes for paths: all, and plugin options' values
+	ini, rootArg := "", ""
+	value := func(name, v string, separate bool) {
+		switch name {
+		case "-c", "--config-file":
+			ini = v
+		case "--rootdir":
+			rootArg = v
+		}
+		if separate && pyPlugin[name] {
+			early, plugin = append(early, v), append(plugin, v)
+		}
+	}
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		switch {
-		case a == "--":
-			i = len(args) // the rest is positional: replaced
-			continue
-		case !strings.HasPrefix(a, "-") || a == "-":
-			continue // a path or node id: replaced
+		case a == "--" || !strings.HasPrefix(a, "-") || a == "-":
+			pos := []string{a}
+			if a == "--" {
+				pos, i = args[i+1:], len(args) // the rest is positional
+			}
+			for _, p := range pos {
+				if _, after, ok := strings.Cut(p, "::"); ok && strings.Contains(after, "[") {
+					return Cmd{}, false // one parametrization: the rerun would run them all
+				}
+			}
+			early = append(early, pos...) // paths and node ids: replaced
 		case strings.HasPrefix(a, "--"):
-			name, _, hasValue := strings.Cut(a, "=")
+			name, v, hasValue := strings.Cut(a, "=")
 			switch {
 			case pyValue[name] && !hasValue:
 				if i+1 >= len(args) {
 					return Cmd{}, false
 				}
 				opts = append(opts, a, args[i+1])
+				value(name, args[i+1], true)
 				i++
-			case pyValue[name], pyBool[name] && !hasValue:
+			case pyValue[name]:
+				opts = append(opts, a)
+				value(name, v, false)
+			case pyBool[name] && !hasValue:
 				opts = append(opts, a)
 			case pyOptional[name] && !hasValue && i+1 < len(args) && !strings.HasPrefix(args[i+1], "-"):
 				opts = append(opts, a, args[i+1])
+				value(name, args[i+1], true)
 				i++
 			case pyOptional[name]:
 				opts = append(opts, a)
@@ -246,46 +298,91 @@ func pytestRerun(root, cwd string, prefix, args []string, failed []ref.Target) (
 				return Cmd{}, false
 			}
 		default: // short options, maybe clustered (-xvs) or with the value attached (-kfoo, -rA)
-			n, ok := pyShort(a)
+			opt, attached, ok := pyShort(a)
 			if !ok {
 				return Cmd{}, false
 			}
 			opts = append(opts, a)
-			if n {
-				if i+1 >= len(args) {
-					return Cmd{}, false
-				}
+			switch {
+			case opt == "":
+			case attached != "":
+				value(opt, attached, false)
+			case i+1 >= len(args):
+				return Cmd{}, false
+			default:
 				opts = append(opts, args[i+1])
+				value(opt, args[i+1], true)
 				i++
 			}
 		}
 	}
 	var ids []string
 	for _, t := range failed {
-		id := rel(cwd, filepath.Join(root, filepath.FromSlash(t.Path)), false) + "::" + strings.ReplaceAll(t.Name, ".", "::")
+		param, ok := pyParam(t.Printed, t.Name)
+		if !ok {
+			return Cmd{}, false
+		}
+		id := rel(cwd, filepath.Join(root, filepath.FromSlash(t.Path)), false) + "::" + strings.ReplaceAll(t.Name, ".", "::") + param
 		if !slices.Contains(ids, id) {
 			ids = append(ids, id)
 		}
 	}
 	slices.Sort(ids)
-	args = append(append(append([]string{}, prefix...), opts...), ids...)
-	return Cmd{Args: args, Tests: len(ids)}, true
+	args = append(append([]string{}, prefix...), opts...)
+	if ini == "" { // with -c, both settle on that file
+		run, ok1 := pytestSetup(cwd, early, rootArg)
+		re, ok2 := pytestSetup(cwd, append(plugin, ids...), rootArg)
+		switch {
+		case !ok1 || !ok2:
+			return Cmd{}, false
+		case run == re:
+		case run.ini != "":
+			args = append(args, "-c", rel(cwd, run.ini, false))
+		case re.ini == "":
+			args = append(args, "--rootdir", rel(cwd, run.rootdir, false))
+		default:
+			return Cmd{}, false // the run had no config file; the rerun would
+		}
+	}
+	return Cmd{Args: append(args, ids...), Tests: len(ids)}, true
+}
+
+// pyParam is the parametrization part of the node id pytest printed for
+// a test: "[2]" of tests/test_x.py::test_p[2]. ok is false when the id is
+// another test's.
+func pyParam(printed, name string) (string, bool) {
+	if printed == "" {
+		return "", true
+	}
+	tail := "::" + strings.ReplaceAll(name, ".", "::")
+	if strings.HasSuffix(printed, tail) && strings.HasSuffix(printed[:len(printed)-len(tail)], ".py") {
+		return "", true
+	}
+	if i := strings.Index(printed, tail+"["); i >= 0 && strings.HasSuffix(printed[:i], ".py") && strings.HasSuffix(printed, "]") {
+		return printed[i+len(tail):], true
+	}
+	return "", false
 }
 
 // pyShort checks a cluster of short options: each a known flag, ending at
-// one that takes a value (attached, or the next word: needsNext).
-func pyShort(a string) (needsNext, ok bool) {
+// one that takes a value (opt), with the value attached or else the next
+// word.
+func pyShort(a string) (opt, attached string, ok bool) {
 	letters := a[1:]
 	for j, c := range letters {
-		opt := "-" + string(c)
+		o := "-" + string(c)
 		switch {
-		case pyValue[opt]:
-			return j == len(letters)-1, true
-		case !pyBool[opt]:
-			return false, false
+		case pyValue[o]:
+			attached = letters[j+1:]
+			if j == 0 { // -c=x is -c x
+				attached = strings.TrimPrefix(attached, "=")
+			}
+			return o, attached, true
+		case !pyBool[o]:
+			return "", "", false
 		}
 	}
-	return false, true
+	return "", "", true
 }
 
 // cargo test options and libtest's (after --), by what a rerun does with
@@ -306,13 +403,15 @@ var (
 
 // cargoRerun: cargo [+toolchain] test <cargo options> -- <libtest
 // options> --exact <test paths>. The filters (a TESTNAME before --, words
-// after it) become the failed tests' paths; target selection stays.
-func cargoRerun(root string, argv []string, failed []ref.Target) (Cmd, bool) {
+// after it) become the failed tests' paths: the ones cargo printed, else
+// the ones their files' places give (not where those don't tell). Package
+// and target selection stay.
+func cargoRerun(root, cwd string, argv []string, failed []Failed) (Cmd, bool) {
 	if !all(failed, ".rs") {
 		return Cmd{}, false
 	}
 	i := 1
-	head := []string{"cargo"}
+	head := []string{argv[0]}
 	if i < len(argv) && strings.HasPrefix(argv[i], "+") {
 		head = append(head, argv[i])
 		i++
@@ -322,20 +421,22 @@ func cargoRerun(root string, argv []string, failed []ref.Target) (Cmd, bool) {
 	}
 	head = append(head, "test")
 	i++
-	var opts, lib []string
-	narrowed := false // target selection given: only those targets build
+	var opts, lib, pkgs []string
+	var sel cargoSel
+	workspace, manifest := false, ""
 	for ; i < len(argv) && argv[i] != "--"; i++ {
 		a := argv[i]
 		if !strings.HasPrefix(a, "-") {
 			continue // TESTNAME: replaced
 		}
-		name, _, hasValue := strings.Cut(a, "=")
+		name, value, hasValue := strings.Cut(a, "=")
 		switch {
 		case cargoValue[name] && !hasValue:
 			if i+1 >= len(argv) {
 				return Cmd{}, false
 			}
-			opts = append(opts, a, argv[i+1])
+			value = argv[i+1]
+			opts = append(opts, a, value)
 			i++
 		case cargoValue[name], cargoBool[name] && !hasValue:
 			opts = append(opts, a)
@@ -343,9 +444,14 @@ func cargoRerun(root string, argv []string, failed []ref.Target) (Cmd, bool) {
 			return Cmd{}, false // --doc, --no-run and anything unknown
 		}
 		switch name {
-		case "--lib", "--test", "--bin", "--bins", "--tests", "--example", "--examples", "--bench", "--benches":
-			narrowed = true
+		case "-p", "--package":
+			pkgs = append(pkgs, value)
+		case "--workspace", "--all":
+			workspace = true
+		case "--manifest-path":
+			manifest = value
 		}
+		sel.add(name, value)
 	}
 	for i++; i < len(argv); i++ {
 		a := argv[i]
@@ -368,36 +474,48 @@ func cargoRerun(root string, argv []string, failed []ref.Target) (Cmd, bool) {
 			return Cmd{}, false // --list, --bench and anything unknown
 		}
 	}
-	var filters []string
-	crates := map[string]bool{}
-	targets := map[string]bool{}
+	ts := make([]ref.Target, len(failed))
+	for i, t := range failed {
+		ts[i] = t.Target
+	}
+	crates := map[string]*rustCrate{}
+	load := func(dir string) *rustCrate {
+		if crates[dir] == nil {
+			crates[dir] = loadCrate(dir, lastSegments(ts))
+		}
+		return crates[dir]
+	}
+	var es []rustEntry
 	for _, t := range failed {
 		abs := filepath.Join(root, filepath.FromSlash(t.Path))
-		crate := up(root, filepath.Dir(abs), "Cargo.toml", []byte("[package]"))
-		if crate == "" {
+		dir := up(root, filepath.Dir(abs), "Cargo.toml", []byte("[package]"))
+		if dir == "" {
 			return Cmd{}, false
 		}
-		crates[crate] = true
-		mod, target := rustModule(rel(crate, abs, false))
-		targets[crate+"\x00"+target] = true
-		f := strings.ReplaceAll(t.Name, ".", "::")
-		if mod != "" {
-			f = mod + "::" + f
+		c := load(dir)
+		mod, own, known := c.place(rel(dir, abs, false))
+		e := rustEntry{crate: c, own: own, known: known && !c.opaque(), file: t.Path, path: t.Printed}
+		q := strings.ReplaceAll(t.Name, ".", "::")
+		switch {
+		case e.path == "" && !e.known:
+			return Cmd{}, false // the file's place doesn't give its path
+		case e.path == "":
+			e.path = rustJoin(mod, t.Name)
+		case e.path != q && !strings.HasSuffix(e.path, "::"+q):
+			return Cmd{}, false // printed for another test
 		}
-		if !slices.Contains(filters, f) {
-			filters = append(filters, f)
-		}
+		es = append(es, e)
 	}
-	slices.Sort(filters)
-	c := Cmd{Tests: len(filters)}
-	// --exact matches a path in each test binary the run builds: with the
-	// failed tests in several crates or targets, or a crate with a library
-	// and a binary root and no target chosen, a test with the same path
-	// elsewhere runs too
-	shared := len(crates) > 1 || len(targets) > 1
-	for crate := range crates {
-		shared = shared || !narrowed && exists(filepath.Join(crate, "src", "lib.rs")) && exists(filepath.Join(crate, "src", "main.rs"))
+	scope, ok := cargoScope(root, cwd, pkgs, workspace, manifest, load)
+	if !ok {
+		return Cmd{}, false
 	}
+	shared, ok := rustCaveat(scope, sel, es)
+	if !ok {
+		return Cmd{}, false
+	}
+	filters, n := rustFilters(es)
+	c := Cmd{Tests: n}
 	if shared {
 		c.Caveat = "also runs tests with the same path in the other targets"
 	}
@@ -405,4 +523,21 @@ func cargoRerun(root string, argv []string, failed []ref.Target) (Cmd, bool) {
 	args = append(append(args, lib...), "--exact")
 	c.Args = append(args, filters...)
 	return c, true
+}
+
+// rustFilters are the entries' paths, sorted, and how many tests they
+// are: the same path in two files is two tests.
+func rustFilters(es []rustEntry) (filters []string, n int) {
+	seen := map[string]bool{}
+	for _, e := range es {
+		if !slices.Contains(filters, e.path) {
+			filters = append(filters, e.path)
+		}
+		if k := e.file + "\x00" + e.path; !seen[k] {
+			seen[k] = true
+			n++
+		}
+	}
+	slices.Sort(filters)
+	return filters, n
 }

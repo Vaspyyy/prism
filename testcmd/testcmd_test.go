@@ -130,22 +130,45 @@ func TestCargo(t *testing.T) {
 		t.Errorf("cargo:\n got %+v\nwant %q", cs, want)
 	}
 	// from inside the crate, an integration test target
+	write(t, root, "crates/a/tests/cli/main.rs", "mod args;\n")
 	it := []ref.Target{{Path: "crates/a/tests/cli/main.rs", Name: "runs", Kind: "fn"}, {Path: "crates/a/tests/cli/args.rs", Name: "parses", Kind: "fn"}}
 	if cs := For(root, filepath.Join(root, "crates", "a", "src"), it); cs[0].String() != "cargo test --test cli -- --exact args::parses runs" {
 		t.Errorf("integration: %q", cs[0].String())
 	}
-	// a library and a binary root can share test paths
-	write(t, root, "crates/a/src/main.rs", "")
+	// a library and a binary root can share test paths: a module of src/
+	// may be in both, and so may a path
+	write(t, root, "crates/a/src/main.rs", "fn main() {}\n")
+	if cs := For(root, root, ts[:1]); cs[0].Caveat != "" {
+		t.Errorf("lib + main without tests::parses: caveat %q", cs[0].Caveat)
+	}
+	if cs := For(root, root, ts[1:2]); cs[0].Caveat == "" {
+		t.Error("src/group/mod.rs, lib + main: no caveat")
+	}
+	write(t, root, "crates/a/src/main.rs", "fn main() {}\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn parses() {}\n}\n")
 	if cs := For(root, root, ts[:1]); cs[0].Caveat == "" {
 		t.Error("lib + main: no caveat")
 	}
-	for p, want := range map[string][2]string{
-		"src/lib.rs": {"", ""}, "src/main.rs": {"", ""}, "src/a/lib.rs": {"a::lib", ""}, "src/a/mod.rs": {"a", ""},
-		"src/bin/tool.rs": {"", ""}, "src/bin/tool/opts.rs": {"opts", ""}, "tests/x.rs": {"", "x"}, "tests/x/main.rs": {"", "x"},
-		"benches/b.rs": {"", ""},
+	c := &rustCrate{dir: filepath.Join(root, "crates", "a"), name: "a", targets: []rustTarget{{"lib", "a"}, {"bin", "a"}}}
+	write(t, root, "crates/a/src/bin/tool/main.rs", "")
+	write(t, root, "crates/a/src/bin/gen.rs", "")
+	write(t, root, "crates/a/tests/x/main.rs", "")
+	write(t, root, "crates/a/tests/y.rs", "")
+	for p, want := range map[string]string{
+		"src/lib.rs": " lib/a", "src/main.rs": " bin/a", "src/a/lib.rs": "a::lib lib/a bin/a", "src/a/mod.rs": "a lib/a bin/a",
+		"src/bin/tool/main.rs": " bin/tool", "src/bin/tool/opts.rs": "opts bin/tool", "src/bin/gen/opts.rs": "opts bin/gen",
+		"src/bin/other/opts.rs": "other::opts ?", "tests/x.rs": " test/x", "tests/x/main.rs": " test/x", "tests/x/a/mod.rs": "a test/x",
+		"tests/y/a.rs": "a test/y", "tests/common/mod.rs": "common ?", "benches/b.rs": " bench/b", "build.rs": " ?",
 	} {
-		if m, tg := rustModule(p); m != want[0] || tg != want[1] {
-			t.Errorf("rustModule(%s) = %q, %q", p, m, tg)
+		mod, own, known := c.place(p)
+		got := mod
+		for _, t := range own {
+			got += " " + t.kind + "/" + t.name
+		}
+		if !known {
+			got += " ?"
+		}
+		if got != want {
+			t.Errorf("place(%s) = %q, want %q", p, got, want)
 		}
 	}
 }
