@@ -1,0 +1,66 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: gofmt
+        if: runner.os == 'Linux'
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then echo "not formatted with gofmt:"; echo "$unformatted"; exit 1; fi
+      - name: go vet
+        run: go vet ./...
+      - name: go test
+        run: go test -race ./...
+
+  # Prism is shared by all four tools: build and test each of them against
+  # this version before it's tagged. A tool branch with the same name as
+  # this branch is used when it exists (changes made together), else main.
+  tools:
+    name: tool (${{ matrix.tool }})
+    strategy:
+      fail-fast: false
+      matrix:
+        tool: [glint, seek, recap, crux]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: prism
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: prism/go.mod
+      - name: check out ${{ matrix.tool }}
+        env:
+          TOOL: ${{ matrix.tool }}
+          BRANCH: ${{ github.head_ref || github.ref_name }}
+        run: |
+          url="https://github.com/Vaspyyy/$TOOL.git"
+          ref=main
+          if [ "$BRANCH" != main ] && git ls-remote --exit-code --heads "$url" "$BRANCH" >/dev/null; then ref="$BRANCH"; fi
+          echo "testing $TOOL at $ref"
+          git clone -q --depth 1 --branch "$ref" "$url" tool
+      - name: build and test against this prism
+        working-directory: tool
+        run: |
+          go work init . ../prism
+          go vet ./...
+          go test -race ./...
