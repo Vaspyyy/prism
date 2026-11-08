@@ -10,7 +10,7 @@ Identifiers come first because everything else is built from them: JSON without 
 
 **v1 = phases 0 to 3.** v1 has no `prism` binary: everything ships inside the four tools through the library.
 
-## Phase 0: the core module
+## Phase 0: the core module (done 2026-11-08)
 
 - Create `github.com/Vaspyyy/prism` (Go, stdlib only, GPL-3.0).
 - Move `glint/outline` to `prism/outline`, history included (`git filter-repo` or a subtree split, so blame survives).
@@ -20,7 +20,7 @@ Identifiers come first because everything else is built from them: JSON without 
 
 Done when: glint, seek and recap build against `prism` and their existing tests pass unchanged.
 
-## Phase 1: refs
+## Phase 1: refs (done 2026-11-08)
 
 - `prism/ref`: parse, format, match, as in [refs](refs.md), with the round-trip test.
 - **seek**

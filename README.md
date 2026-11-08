@@ -4,7 +4,7 @@ The shared layer that lets **glint**, **crux**, **seek** and **recap** build on 
 
 Prism is not a fifth tool that wraps the other four. It is a small Go library that all four import, plus (later) a thin `prism` command for the few things no single tool should own. The goal: after `recap` shows a commit, an agent can take a changed function straight to `seek` (definition and callers) and on to `crux` (the tests that mention it) without retyping a path or a symbol, and every step says honestly what it knows.
 
-Status (2026-11-08): Phase 0 is done, Phase 1 (refs) is in progress. `outline`, `repo` and `ref` exist, the tools are switching to them, and `e2e/` checks that every ref one tool prints is accepted by the others. See the [roadmap](docs/roadmap.md).
+Status (2026-11-08): Phases 0 and 1 of the [roadmap](docs/roadmap.md) are done. glint 0.7.0, seek 0.2.0, recap 0.2.0 and crux 0.4.0 print and accept refs, and `e2e/` checks on every PR that a ref printed by one tool is accepted by the others. Next: Phase 2, `--json`.
 
 ```sh
 go get github.com/Vaspyyy/prism
