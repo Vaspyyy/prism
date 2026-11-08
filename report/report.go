@@ -76,6 +76,9 @@ type Location struct {
 	Line int    `json:"line"`
 	Col  int    `json:"col,omitempty"`
 	In   string `json:"in,omitempty"` // ref of the innermost symbol containing the line
+	// Marks are the context marks of the symbol in In: "changed",
+	// "branch", "focus", "failing".
+	Marks []string `json:"marks,omitempty"`
 }
 
 // Link is a relation between two results and how it's known

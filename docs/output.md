@@ -109,8 +109,10 @@ Fields named `ref`, `in`, `test`, `target`, `from`, `to` and `old_ref` always ho
 **Location**: a place in a file, plus the symbol containing it (if any).
 
 ```json
-{ "path": "internal/group/group.go", "line": 312, "col": 9, "in": "internal/group/group.go:multiline" }
+{ "path": "internal/group/group.go", "line": 312, "col": 9, "in": "internal/group/group.go:multiline", "marks": ["changed"] }
 ```
+
+`marks` are the context marks of the symbol in `in`, left out when it has none.
 
 **Link**: see [evidence](evidence.md).
 
