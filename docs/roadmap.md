@@ -91,6 +91,15 @@ An automated end-to-end test in this repo. It builds a fixture Go module in a te
 - **recap shows callers and test mentions per changed symbol.** This needs seek's search in the core library; decide after v1 whether it earns that.
 - More `testcmd` ecosystems (vitest, jest, JUnit) once a precise command is known for each.
 
+## Found along the way
+
+Things the work so far turned up that belong to a later step:
+
+- **outline** doesn't recognise generic arrow functions in TypeScript (`export const card = <Message>(...) =>`), so lines inside them count as outside any definition. A parser change, so it should come with the outline diff check in CI (step 3 of the CI plan).
+- **crux** doesn't parse `go vet`'s type-check errors (`vet: path:line:col: message`); they show as plain output lines, without a location or `in` line.
+- **seek** has no agent skill (`skill/SKILL.md`), unlike glint, recap and crux, so agents only learn its ref mode from the README. Its README GIF still shows a range that includes the doc comment.
+- **glint** had a data race in directory listing that CI's race detector caught (fixed in glint#5).
+
 ## Decisions taken
 
 Each can be revisited; the reason is noted so it's clear what would change it.
