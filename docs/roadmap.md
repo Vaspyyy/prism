@@ -37,7 +37,7 @@ Done when: glint, seek and recap build against `prism` and their existing tests 
 
 Done when: the cross-tool test passes (every ref printed by any tool in the acceptance scenario resolves in every other tool that takes symbols).
 
-## Phase 2: JSON
+## Phase 2: JSON (done 2026-11-08)
 
 - `prism/report`: envelope, Symbol, Location, Link, Next, Error, schema `prism/1`, golden tests.
 - `--json` on seek, recap and crux. glint's `--json` moves into the envelope (`result.items`), with a note in its release notes.
@@ -98,6 +98,8 @@ Things the work so far turned up that belong to a later step:
 - **outline** doesn't recognise generic arrow functions in TypeScript (`export const card = <Message>(...) =>`), so lines inside them count as outside any definition. A parser change, so it should come with the outline diff check in CI (step 3 of the CI plan).
 - **crux** doesn't parse `go vet`'s type-check errors (`vet: path:line:col: message`); they show as plain output lines, without a location or `in` line.
 - **seek** has no agent skill (`skill/SKILL.md`), unlike glint, recap and crux, so agents only learn its ref mode from the README. Its README GIF still shows a range that includes the doc comment.
+- **report** gaps left after Phase 2: a moved definition in a new file can't say its signature changed (`RecapDef` has no `old_sig`), and `last_commit.commits` in glint is 1 unless `-H` asked for the count (it should be left out instead). seek passes a file kind `long lines` that the docs don't list.
+- **glint**: `-A -M` orders children of equal size differently between runs, and files over 4 MiB show 0 lines (line counting stops at that size).
 - **glint** had a data race in directory listing that CI's race detector caught (fixed in glint#5).
 
 ## Decisions taken
