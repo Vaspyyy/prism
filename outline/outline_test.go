@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func spans(name, src string) string {
@@ -258,5 +259,31 @@ func TestRead(t *testing.T) {
 		if data, ok := Read(p); ok || data != nil {
 			t.Errorf("Read(%s) = %d bytes, %v; want refused", filepath.Base(p), len(data), ok)
 		}
+	}
+}
+
+func TestReadNamedPipe(t *testing.T) {
+	// a named pipe is refused without blocking, also when Read's Lstat is
+	// bypassed (the path swapped after the check): openFile itself mustn't block
+	p := filepath.Join(t.TempDir(), "pipe.go")
+	if err := mkfifo(p); err != nil {
+		t.Skip("no named pipes:", err)
+	}
+	done := make(chan bool)
+	go func() {
+		_, ok := Read(p)
+		f, err := openFile(p)
+		if err == nil {
+			f.Close()
+		}
+		done <- ok
+	}()
+	select {
+	case ok := <-done:
+		if ok {
+			t.Error("a named pipe was read")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Read or openFile blocks on a named pipe")
 	}
 }
