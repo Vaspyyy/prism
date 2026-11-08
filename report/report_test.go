@@ -51,7 +51,7 @@ var samples = map[string]*Envelope{
 				{What: "renamed", Symbol: Symbol{Ref: "internal/files/files.go:globSet.matches", Path: "internal/files/files.go", Name: "globSet.matches", Kind: "func", Line: 187, End: 201},
 					OldRef: "internal/files/files.go:globSet.match", Added: 2},
 			},
-			Outside: &LineCounts{Added: 1},
+			Outside: &RecapOutside{Added: 1, Lines: []string{"+var debug = false"}},
 		}},
 	}),
 	"crux": envelope("crux", []string{"go", "test", "./..."}, Crux{
@@ -63,7 +63,7 @@ var samples = map[string]*Envelope{
 		Lines:    12, Log: "/home/u/.local/state/crux/logs/x.log",
 	}),
 	"glint": envelope("glint", []string{"-A", "--json", "internal/files/files.go"}, Glint{
-		File: &GlintFile{Path: "internal/files/files.go", Lines: 272, Size: 7000, Symbols: []Symbol{list}},
+		File: &GlintFile{Path: "internal/files/files.go", Lines: 272, Size: 7000, Modified: when, Git: "modified", Symbols: []Symbol{list}},
 	}),
 	"error": func() *Envelope {
 		e := envelope("seek", []string{"files.go:Open"}, nil)
@@ -187,5 +187,36 @@ func TestSymbols(t *testing.T) {
 	}
 	if got[3].Name != "Repo.Open" || got[3].Line != 9 || got[3].End != 11 || got[3].Sig != "func (r *Repo) Open() error" {
 		t.Errorf("Repo.Open: %+v", got[3])
+	}
+}
+
+// Lists a mode produces are present even when empty, so programs can range
+// over them; and a symlink's target isn't mistaken for a ref.
+func TestEmptyListsAndLinkTargets(t *testing.T) {
+	none := []string{}
+	noItems := []GlintEntry{}
+	for name, c := range map[string]struct {
+		result any
+		want   string
+	}{
+		"seek -l": {Seek{Pattern: "x", Definitions: []Symbol{}, Groups: []SeekGroup{}, Files: &none}, `"files": []`},
+		"listing": {Glint{Items: &noItems, Dir: "/work"}, `"items": []`},
+	} {
+		var buf bytes.Buffer
+		Write(&buf, envelope("t", nil, c.result))
+		if !strings.Contains(buf.String(), c.want) {
+			t.Errorf("%s: want %s in\n%s", name, c.want, buf.String())
+		}
+	}
+	var buf bytes.Buffer
+	items := []GlintEntry{{Name: "link", Path: "link", LinkTarget: "a.go:Open"}}
+	Write(&buf, envelope("glint", nil, Glint{Items: &items}))
+	if refs, _ := Refs(buf.Bytes()); len(refs) != 0 {
+		t.Errorf("a symlink target was taken for a ref: %q", refs)
+	}
+	buf.Reset()
+	Write(&buf, envelope("seek", nil, Seek{Pattern: "x", Definitions: []Symbol{}, Groups: []SeekGroup{}}))
+	if strings.Contains(buf.String(), `"files": [`) || strings.Contains(buf.String(), `"files": null`) {
+		t.Errorf("files outside -l:\n%s", buf.String())
 	}
 }

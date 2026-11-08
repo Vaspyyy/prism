@@ -64,10 +64,16 @@
         ]
       }
     ],
+    "query": {
+      "whole_word": false,
+      "ignore_case": false,
+      "plain_text": false
+    },
     "counts": {
       "hits": 2,
       "files": 2,
-      "definitions": 1
+      "definitions": 1,
+      "searched": 0
     }
   },
   "links": [],
