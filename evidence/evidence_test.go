@@ -64,3 +64,19 @@ func TestTestsReason(t *testing.T) {
 	}()
 	TestsReason(Ran, 1, "List", "")
 }
+
+func TestRerunReason(t *testing.T) {
+	for _, c := range []struct {
+		n      int
+		caveat string
+		want   string
+	}{
+		{1, "", "reruns the 1 failed test"},
+		{3, "", "reruns the 3 failed tests"},
+		{2, "also runs tests of the same name in the other packages", "reruns the 2 failed tests; also runs tests of the same name in the other packages"},
+	} {
+		if got := RerunReason(c.n, c.caveat); got != c.want || strings.Contains(got, "cover") {
+			t.Errorf("RerunReason(%d, %q) = %q, want %q", c.n, c.caveat, got, c.want)
+		}
+	}
+}

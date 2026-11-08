@@ -110,6 +110,21 @@ func TestsReason(rel string, n int, name, caveat string) string {
 	return s
 }
 
+// RerunReason is the reason for a suggested command that reruns the n
+// tests that failed in a run: "reruns the 2 failed tests". Its basis is
+// execution (the tests ran and failed), so it says "failed" and nothing
+// about what the tests check. caveat is appended as in TestsReason.
+func RerunReason(n int, caveat string) string {
+	s := "reruns the " + strconv.Itoa(n) + " failed test"
+	if n != 1 {
+		s += "s"
+	}
+	if caveat != "" {
+		s += "; " + caveat
+	}
+	return s
+}
+
 func verb(n int, one, many string) string {
 	if n == 1 {
 		return one

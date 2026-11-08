@@ -1,5 +1,6 @@
 // Package testcmd builds the command that runs a given set of tests: Go,
-// pytest and cargo (docs/evidence.md, "Suggesting tests").
+// pytest and cargo (docs/evidence.md, "Suggesting tests"). For builds it
+// from scratch; Rerun reruns a run's failed tests with the run's own flags.
 //
 // It only builds commands it can make precise. Each one says how many of
 // the tests it selects and, where the runner's filter may also select
@@ -182,6 +183,33 @@ func rel(base, p string, dirSlash bool) string {
 // every listed package, so with several packages a test of the same name
 // in another one runs too; that's checked and said.
 func goCmd(root, cwd, mod string, ts []ref.Target) Cmd {
+	sel := goSelect(root, ts)
+	var args []string
+	base := cwd
+	if within(mod, cwd) {
+		args = []string{"go", "test", "-run", sel.re}
+	} else {
+		args = []string{"go", "-C", rel(cwd, mod, false), "test", "-run", sel.re}
+		base = mod
+	}
+	for _, d := range sel.dirs {
+		args = append(args, rel(base, d, true))
+	}
+	return Cmd{Args: args, Tests: sel.n, Caveat: sel.caveat}
+}
+
+// goSelection is what a -run filter selects for some Go tests: the regexp,
+// the package directories (absolute, sorted), how many distinct tests, and
+// the caveat when a test of the same name in another listed package runs
+// too.
+type goSelection struct {
+	re     string
+	dirs   []string
+	n      int
+	caveat string
+}
+
+func goSelect(root string, ts []ref.Target) goSelection {
 	byDir := map[string]map[string]bool{}
 	var dirs, names []string
 	for _, t := range ts {
@@ -199,26 +227,13 @@ func goCmd(root, cwd, mod string, ts []ref.Target) Cmd {
 	}
 	slices.Sort(dirs)
 	slices.Sort(names)
-	n := 0
-	for _, set := range byDir {
-		n += len(set)
-	}
-	re := "^" + names[0] + "$"
+	sel := goSelection{re: "^" + names[0] + "$", dirs: dirs}
 	if len(names) > 1 {
-		re = "^(" + strings.Join(names, "|") + ")$"
+		sel.re = "^(" + strings.Join(names, "|") + ")$"
 	}
-	var args []string
-	base := cwd
-	if within(mod, cwd) {
-		args = []string{"go", "test", "-run", re}
-	} else {
-		args = []string{"go", "-C", rel(cwd, mod, false), "test", "-run", re}
-		base = mod
+	for _, set := range byDir {
+		sel.n += len(set)
 	}
-	for _, d := range dirs {
-		args = append(args, rel(base, d, true))
-	}
-	c := Cmd{Args: args, Tests: n}
 	if len(dirs) > 1 {
 		wanted := map[string]bool{}
 		for _, nm := range names {
@@ -227,12 +242,12 @@ func goCmd(root, cwd, mod string, ts []ref.Target) Cmd {
 		for _, d := range dirs {
 			for _, nm := range goTests(d) {
 				if wanted[nm] && !byDir[d][nm] {
-					c.Caveat = "also runs tests of the same name in the other packages"
+					sel.caveat = "also runs tests of the same name in the other packages"
 				}
 			}
 		}
 	}
-	return c
+	return sel
 }
 
 // goTests lists the test functions in a directory's _test.go files.

@@ -79,6 +79,8 @@ Paths are relative to the directory the tool ran in, so the command runs as prin
 
 Other ecosystems: no suggestion until a precise command is known. A wrong suggestion is worse than none.
 
+**Reruns.** After a run with failed tests, crux can offer the command that reruns only those: `testcmd.Rerun` takes the original command and keeps its flags (`-race`, `-tags`, `-count=1`, `-args …`; pytest's `-x`, `-k`, `-n 4`; cargo's `--release`, `-p`, `--test x`, `--test-threads`), and replaces only what selects tests: Go's packages and `-run` (`-bench` is dropped), pytest's paths (by node ids), cargo's filters (by the test paths, with `--exact`). It reads the command conservatively and gives no suggestion for an option it doesn't know (it can't tell whether the next word is that option's value or a path), a mode that doesn't just run tests (`go test -fuzz`, `-list`, `-c`; `pytest --collect-only`, `--stepwise`; `cargo test --doc`, `--no-run`), a subtest filter (`-run TestX/case`, since the rerun would run the whole test), or failed tests the command as invoked can't reach. The reason has basis `execution`: "reruns the 2 failed tests", with the caveats above where a name or path may select more.
+
 These tests have basis `reference` until crux runs them (`execution`). They never become "covers" without coverage data.
 
 ## Later: coverage
