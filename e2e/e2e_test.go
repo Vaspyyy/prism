@@ -100,6 +100,7 @@ func setup(t *testing.T) *env {
 	e := &env{t: t, bin: bin, dir: t.TempDir()}
 	for _, kv := range [][2]string{
 		{"GIT_CONFIG_GLOBAL", os.DevNull}, {"GIT_CONFIG_NOSYSTEM", "1"}, {"NO_COLOR", "1"},
+		{"XDG_STATE_HOME", t.TempDir()}, // crux's logs
 		{"GIT_AUTHOR_NAME", "Test"}, {"GIT_AUTHOR_EMAIL", "test@example.com"},
 		{"GIT_COMMITTER_NAME", "Test"}, {"GIT_COMMITTER_EMAIL", "test@example.com"},
 	} {
@@ -155,16 +156,19 @@ var (
 	// recap: a file header ("path  modified, …"), then change lines
 	// ("  changed  func List  L7-15  +1 −1")
 	recapFile   = regexp.MustCompile(`^(\S+)  (?:modified|new|deleted|renamed|moved)`)
-	recapChange = regexp.MustCompile(`^  (?:changed|added|removed|renamed|moved) +\S+ +(\S+) +L\d+`)
+	recapChange = regexp.MustCompile(`^  (?:changed|added|removed|renamed|moved) +\S+ +(\S+)` + marks + ` +L\d+`)
 	// glint: a header ("path — 27L …"), then "  12 name  signature" when the
 	// signature doesn't show the name
 	glintFile = regexp.MustCompile(`^(\S+) — \d+L`)
 	glintName = regexp.MustCompile(`^  \d+ (\S+)  `)
 	// seek -d: "path:Name  L7-15  signature"
-	seekDef = regexp.MustCompile(`^(\S+:\S+)  L\d+`)
+	seekDef = regexp.MustCompile(`^(\S+:\S+)` + marks + `  L\d+`)
 	// crux: "    in path:Name" and "    test path:Name"
-	cruxRef = regexp.MustCompile(`^\s+(?:in|test) (\S+:\S+)$`)
+	cruxRef = regexp.MustCompile(`^\s+(?:in|test) (\S+:\S+)` + marks + `$`)
 )
+
+// marks are context marks after a ref or name: " [changed] [focus]"
+const marks = `(?: \[(?:changed|branch|focus|failing)\])*`
 
 func grouped(out string, header, line *regexp.Regexp) []string {
 	var refs []string
@@ -231,7 +235,7 @@ func TestRefsRoundTrip(t *testing.T) {
 
 	for _, r := range printed {
 		out, code := e.run("seek", "-A", "-b", "20", r)
-		if code != 0 || !strings.HasPrefix(out, "seek: "+r) {
+		if code != 0 || !regexp.MustCompile(`^seek: `+regexp.QuoteMeta(r)+marks+` `).MatchString(stripContext(out)) {
 			t.Errorf("seek %s: exit %d, want the definition:\n%s", r, code, out)
 		}
 	}

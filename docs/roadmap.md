@@ -58,22 +58,22 @@ Done when: the acceptance test below passes.
 
 ## v1 acceptance test
 
-An automated end-to-end test in this repo. It builds a fixture Go module in a temp dir (a function `List`, a caller `run`, a test `TestList` that mentions `List`, and a commit that changes `List`), then runs the real binaries with `-A`. Each step's command is taken from the previous step's `next:` lines, never typed by the test.
+`TestAcceptance` in `e2e/acceptance_test.go`, run in CI against all four tools built from this checkout. It builds a fixture Go module in a temp dir (a doc-commented function `List`, a caller `run`, a test `TestList` that calls `List`, and a commit that changes `List` and breaks `TestList`), then runs the real binaries in one agent session. Each step's command is taken from the previous step's `next:` lines, never typed by the test.
 
 1. `recap show <commit>`
-   - lists `internal/files/files.go:List` as changed
+   - lists `internal/files/files.go:List` as changed, and records the commit as focus
    - `next:` includes `seek internal/files/files.go:List`
 2. the seek suggestion
-   - shows `List`'s definition (`73-…`, not including the doc comment), marked `[focus]`
-   - shows the hit in `run` and the hit in `TestList`, the test labelled "mentions"
+   - shows `List`'s definition from its `func` line (not the doc comment), marked `[focus]`, under a `context:` line
+   - shows the hit in `run` and the hit in `TestList`, the test labelled "mentions List"
    - `next:` includes `crux go test -run '^TestList$' ./internal/files/` with the reason "runs the 1 test that mentions List"
-3. the crux suggestion (with `List` broken on purpose in a second variant of the fixture)
-   - reports the failure with `in internal/files/files_test.go:TestList`
-   - never uses the word "covers" anywhere
+3. the crux suggestion
+   - reports the failure with `in internal/files/files_test.go:TestList`, and records the run
+   - no output anywhere says "covers", "covered" or "coverage"
 4. every command again with `--json`
-   - all documents parse, every ref in them resolves in every tool that takes symbols
-5. the whole run again with `--no-context`
-   - same results, minus marks, `context:` lines and fill-ins (proves rule 2: context never hides)
+   - all documents are valid envelopes with `context`, their links pass `evidence.CheckAll`, their `next` items are the text run's, and every symbol ref in them is accepted by seek
+5. the whole run again with `--no-context` added to every command
+   - the same reports minus marks and the `context:` line, and no `next:` line that context-on didn't print (context may add suggestions, never remove one; proves rule 2: context never hides)
 
 ## Per-tool change list
 
