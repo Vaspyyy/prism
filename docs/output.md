@@ -61,7 +61,7 @@ The shape is defined in Go in [`prism/report`](../report): the envelope and shar
 | `tool`, `version` | which tool and release produced it |
 | `args` | the arguments after the tool name, as given |
 | `repo` | from `prism/repo`. Always present: outside git, `git` is false and `root` is the working directory, so paths can always be made absolute |
-| `context` | what context the run had and what it did with it, below; `null` with `--no-context` ([context](context.md)) |
+| `context` | what context the run had and what it did with it (`applied`: any of `rank`, `mark`, `fill`, `suggest`), below; `null` with `--no-context` ([context](context.md)) |
 | `result` | the tool's result, below; left out when `error` is set |
 | `error` | why the run failed, instead of `result` |
 | `links` | relations between symbols, each with a basis (see [evidence](evidence.md)) |
@@ -84,7 +84,7 @@ Fields named `ref`, `in`, `test`, `target`, `from`, `to` and `old_ref` always ho
 }
 ```
 
-`applied` is always there (empty when context was available but changed nothing). `changed` is there in a git repo for tools that read changes, `focus` and `last_run` when the tool reads them and a live record exists. `changed.skipped` says why symbol detail was skipped (`"812 changed files"`). `notes` are the sentences the `context:` line adds beyond the layers. Counts, not lists: the marks on the result's own symbols say which ones context touched.
+`applied` is always there: any of `rank` (reordered results), `mark` (marked results), `fill` (filled a result that would have been empty), `suggest` (a `next:` line only context gave a reason for, such as crux suggesting `recap --show` for the changed symbol an error is in); empty when context was available but changed nothing. `changed` is there in a git repo for tools that read changes, `focus` and `last_run` when the tool reads them and a live record exists. `changed.skipped` says why symbol detail was skipped (`"812 changed files"`). `notes` are the sentences the `context:` line adds beyond the layers. Counts, not lists: the marks on the result's own symbols say which ones context touched.
 
 ## Shared objects
 

@@ -34,9 +34,10 @@ const (
 
 // What context did in a run.
 const (
-	Rank = "rank" // reordered results
-	Mark = "mark" // marked results
-	Fill = "fill" // filled a result that would have been empty
+	Rank    = "rank"    // reordered results
+	Mark    = "mark"    // marked results
+	Fill    = "fill"    // filled a result that would have been empty
+	Suggest = "suggest" // added a next: suggestion it alone gave a reason for
 )
 
 // Marks, as printed in brackets after a name. Changed and Branch come from
@@ -65,7 +66,7 @@ type State struct {
 
 	layers  Layer
 	applied []string
-	used    map[string]bool // marks handed out
+	used    map[string]bool // marks shown or acted on: their layers go in the context: line
 	notes   []string
 	now     func() time.Time
 }
@@ -107,13 +108,20 @@ func LoadWith(info *repo.Info, o Options) *State {
 }
 
 // Marks returns a symbol's marks, in a fixed order: changed or branch,
-// focus, failing. A mark handed out here counts as shown: the context:
-// line names its layer. To look without that (for ranking, or before
-// deciding what to print), use Peek, then Used for what was printed.
+// focus, failing, and counts them as shown: the context: line names their
+// layers and Applied includes Mark. To look without that (for ranking, a
+// suggestion, or before deciding what to print), use Peek.
 func (s *State) Marks(ref string) []string {
 	out := s.Peek(ref)
-	s.Used(out...)
+	s.shown(out)
 	return out
+}
+
+func (s *State) shown(marks []string) {
+	if len(marks) > 0 {
+		s.Used(marks...)
+		s.Use(Mark)
+	}
 }
 
 // Peek returns a symbol's marks like Marks, without counting them as shown.
@@ -138,7 +146,7 @@ func (s *State) Peek(ref string) []string {
 // shown.
 func (s *State) FileMarks(path string) []string {
 	out := s.PeekFile(path)
-	s.Used(out...)
+	s.shown(out)
 	return out
 }
 
@@ -153,8 +161,10 @@ func (s *State) PeekFile(path string) []string {
 	return nil
 }
 
-// Used counts marks as shown, or as the reason results were reordered:
-// the context: line then names their layers. Marks and FileMarks call it.
+// Used records marks that context acted on without printing them: the
+// reason results were reordered (with Use(Rank)) or a suggestion was made
+// (with Use(Suggest)). The context: line then names their layers. A tool
+// that prints marks it got from Peek calls Show instead.
 func (s *State) Used(marks ...string) {
 	if s == nil || s.Off {
 		return
@@ -162,6 +172,15 @@ func (s *State) Used(marks ...string) {
 	for _, m := range marks {
 		s.used[m] = true
 	}
+}
+
+// Show records marks as printed, for marks a tool got from Peek: like
+// Marks, their layers go in the context: line and Applied includes Mark.
+func (s *State) Show(marks ...string) {
+	if s == nil || s.Off {
+		return
+	}
+	s.shown(marks)
 }
 
 // Suffix formats marks as printed after a name: " [changed] [focus]", or
@@ -174,8 +193,8 @@ func Suffix(marks []string) string {
 	return b.String()
 }
 
-// Use records what context did: Rank, Mark or Fill. Recording Mark isn't
-// needed after handing out marks; Marks and FileMarks do that.
+// Use records what context did: Rank, Fill or Suggest. Mark is recorded
+// by Marks, FileMarks and Show.
 func (s *State) Use(what string) {
 	if s == nil || s.Off || slices.Contains(s.applied, what) {
 		return
@@ -199,10 +218,7 @@ func (s *State) Applied() []string {
 	if s == nil || s.Off {
 		return out
 	}
-	if len(s.used) > 0 {
-		s.Use(Mark)
-	}
-	for _, a := range []string{Rank, Mark, Fill} {
+	for _, a := range []string{Rank, Mark, Fill, Suggest} {
 		if slices.Contains(s.applied, a) {
 			out = append(out, a)
 		}
