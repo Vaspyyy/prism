@@ -143,7 +143,7 @@ func TestRemembered(t *testing.T) {
 	st.SetFocus("recap", focus.Focus{Range: "main...feature", New: "c", Symbols: []string{"a.go:B"}})
 	s = Load(info, Focus, false)
 	s.Marks("a.go:B")
-	if !strings.HasPrefix(s.Line(), "context: focus: main...feature (recap,") {
+	if !strings.HasPrefix(s.Line(), "context: focus: main...feature (recap,") { // no old side stored: the range as given
 		t.Errorf("range line: %q", s.Line())
 	}
 }
