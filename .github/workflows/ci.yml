@@ -64,3 +64,33 @@ jobs:
           go work init . ../prism
           go vet ./...
           go test -race ./...
+
+  # The tools agree on refs: build all four against this Prism (same-named
+  # branches when they exist, else main) and hand the refs each prints to
+  # the others (e2e/e2e_test.go).
+  e2e:
+    name: refs across tools
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: prism
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: prism/go.mod
+      - name: build the tools
+        env:
+          BRANCH: ${{ github.head_ref || github.ref_name }}
+        run: |
+          mkdir bin
+          for tool in glint seek recap crux; do
+            url="https://github.com/Vaspyyy/$tool.git"
+            ref=main
+            if [ "$BRANCH" != main ] && git ls-remote --exit-code --heads "$url" "$BRANCH" >/dev/null; then ref="$BRANCH"; fi
+            echo "building $tool at $ref"
+            git clone -q --depth 1 --branch "$ref" "$url" "src-$tool"
+            (cd "src-$tool" && go work init . ../prism && go build -o "../bin/$tool" .)
+          done
+      - name: refs round trip
+        working-directory: prism
+        run: PRISM_E2E_BIN="$GITHUB_WORKSPACE/bin" go test -count=1 -v ./e2e/
