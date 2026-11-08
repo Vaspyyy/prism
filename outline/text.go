@@ -12,7 +12,12 @@ type Text struct {
 	// In labels each line (1-based) that starts inside a string or comment
 	// opened on an earlier line: "string" or "comment". The opening line
 	// isn't labelled (code may come before the mark); the lines after it,
-	// up to and including the closing one, are. nil if there are none.
+	// up to and including the closing one, are, and so are the lines that
+	// start in the code of a template's ${…} (Code has that code). But a
+	// line whose first code is a name isn't labelled: a definition can
+	// start there (window.f = () => { in a ${…}, */ function f() { in a
+	// bundle). Parse looks for definitions on exactly the lines In doesn't
+	// label. nil if there are none.
 	In map[int]string
 	// Code holds, per line, the code inside the ${…} of JavaScript template
 	// strings (and the $(…) and ${…} of shell "…") as byte ranges
@@ -25,8 +30,10 @@ type Text struct {
 // docstrings and other triple-quoted strings, template and raw strings,
 // heredocs, block comments. Parse drops the definitions it would find on
 // their lines; a tool labels a hit on such a line "string" or "comment".
-// name only selects the language; a file type without such strings and
-// comments gives the zero Text.
+// A string or comment that can't end before the end of the file (a lone
+// ` in JSX text) isn't one: its mark is code. name only selects the
+// language; a file type without such strings and comments gives the zero
+// Text.
 func Multiline(name string, data []byte) Text {
 	sy := syntaxByExt[ext(name)]
 	if sy == nil || len(data) == 0 {
@@ -34,18 +41,14 @@ func Multiline(name string, data []byte) Text {
 	}
 	lines := splitLines(data) // "\r\n" ends a line like "\n", as for Parse
 	var t Text
-	lx := newLexer(&source{sy: sy, lines: lines})
+	lx := newLexer(newSource(sy, lines, len(data)))
 	for n := range lines {
-		if lx.inText() {
+		if label := lx.line(n); label != "" {
 			if t.In == nil {
 				t.In = map[int]string{}
 			}
-			t.In[n+1] = "string" // also a line that starts in a template's ${…}: Code has its code
-			if lx.in == comment {
-				t.In[n+1] = "comment"
-			}
+			t.In[n+1] = label
 		}
-		lx.scan(n)
 		if len(lx.interps) > 0 {
 			if t.Code == nil {
 				t.Code = map[int][][2]int{}
@@ -64,7 +67,7 @@ func ext(name string) string {
 // code from text goes.
 type textSyntax struct {
 	line      string // a line comment: "//", "#" or "--"
-	hashWord  bool   // # starts a comment only at the start of a word (shell: $#, ${#x})
+	hashWord  bool   // # starts a comment only at the start of a word (shell: not $#, ${#x}; cd /;# x is one)
 	block     bool   // /* … */
 	chars     bool   // '…' is a character literal or a lifetime, not a string (Rust)
 	digitSep  bool   // ' between digits separates them (C++14: 10'000)
@@ -198,6 +201,30 @@ type source struct {
 	sy    *textSyntax
 	lines []string
 	terms map[hereKey][]int // the lines that could end a heredoc, built when one starts
+	marks []mark            // what is known about the closing marks of strings opened so far
+	// what looking for closing marks may still read: many different marks
+	// (r##"…, r###"…) don't make Multiline or Parse slow
+	lookBudget int
+	// what braceEnd may still read: many definitions that never close
+	// don't make Parse quadratic (real files need at most about 3 times
+	// their size)
+	endBudget int
+}
+
+func newSource(sy *textSyntax, lines []string, size int) *source {
+	return &source{sy: sy, lines: lines, lookBudget: 4*size + 1<<16, endBudget: 8*size + 1<<20}
+}
+
+// pos is a byte of a file: line (0-based) and index in it.
+type pos struct{ line, at int }
+
+func (p pos) before(q pos) bool { return p.line < q.line || p.line == q.line && p.at < q.at }
+
+// mark is what is known about where a closing mark occurs: at found (the
+// furthest occurrence seen so far), and nowhere at or after none.
+type mark struct {
+	close       string
+	found, none pos
 }
 
 // subst is code inside a string: ${…} in a template, ${…} or $(…) in a
@@ -240,6 +267,44 @@ func (lx *lexer) inText() bool {
 	return false
 }
 
+// line scans line n and labels it: "string" or "comment" when it starts
+// inside one opened on an earlier line (or in the code of a template's
+// ${…}), unless a definition could start on it after all: its first code
+// is a name, in that ${…} or after a block comment that closes on the
+// line (*/ function f() in a bundle). Parse looks for definitions on the
+// lines this doesn't label, and Multiline labels the others, so they
+// agree.
+func (lx *lexer) line(n int) string {
+	text, in := lx.inText(), lx.in
+	lx.scan(n)
+	switch {
+	case !text || lx.nameFirst(n):
+		return ""
+	case in == comment:
+		return "comment"
+	}
+	return "string"
+}
+
+// nameFirst: the first byte of line n, just scanned, that isn't blank or
+// in a comment is code that can start a definition: a name, or the * of a
+// generator method.
+func (lx *lexer) nameFirst(n int) bool {
+	s := lx.lines[n]
+	for _, sg := range lx.segs {
+		switch sg.kind {
+		case comment:
+			continue
+		case str:
+			return false
+		}
+		if t := strings.TrimLeft(s[sg.from:sg.to], " \t"); t != "" {
+			return isIdent(t[0]) || t[0] == '*'
+		}
+	}
+	return false
+}
+
 // scan cuts line n into lx.segs and moves the state past it.
 func (lx *lexer) scan(n int) {
 	s := lx.lines[n]
@@ -254,7 +319,7 @@ func (lx *lexer) scan(n int) {
 		lx.flush(len(s))
 		return
 	}
-	if lx.in == code && lx.sy.rubyBegin && strings.HasPrefix(s, "=begin") && (len(s) == 6 || s[6] <= ' ') {
+	if lx.in == code && lx.sy.rubyBegin && strings.HasPrefix(s, "=begin") && (len(s) == 6 || s[6] <= ' ') && lx.src.closes("=end", n, len(s)) {
 		lx.cur, lx.in, lx.term, lx.trim, lx.prefix = comment, comment, "=end", false, true
 		lx.flush(len(s))
 		return
@@ -299,11 +364,60 @@ func (lx *lexer) flush(n int) {
 }
 
 // open starts a string or comment of kind k at s[at:], whose opening mark
-// is n bytes long.
+// is n bytes long, if close occurs after it: one that can't end before
+// the end of the file isn't one, its mark is code.
 func (lx *lexer) open(at, n int, k kind, close string, esc bool) int {
+	if !lx.src.closes(close, lx.n, at+n) {
+		return at + n
+	}
 	lx.to(at, k)
 	lx.in, lx.close, lx.esc, lx.tmpl, lx.quote = k, close, esc, false, false
 	return at + n
+}
+
+// closes: close occurs in line n at or after byte from, or on a later
+// line. It looks forward from there, but never twice at the same part of
+// the file for one mark; past the budget for looking, every mark closes.
+func (src *source) closes(close string, n, from int) bool {
+	var m *mark
+	for i := range src.marks {
+		if src.marks[i].close == close {
+			m = &src.marks[i]
+			break
+		}
+	}
+	if m == nil {
+		if len(src.marks) >= 64 {
+			return true // so many different marks: don't look
+		}
+		src.marks = append(src.marks, mark{close: close, found: pos{-1, 0}, none: pos{len(src.lines), 0}})
+		m = &src.marks[len(src.marks)-1]
+	}
+	q := pos{n, from}
+	switch {
+	case !m.found.before(q):
+		return true
+	case !q.before(m.none):
+		return false
+	}
+	for k := n; k < len(src.lines) && k <= m.none.line; k++ {
+		l, start := src.lines[k], 0
+		if k == n {
+			start = from
+		}
+		if src.lookBudget -= len(l) - start + 1; src.lookBudget < 0 {
+			return true
+		}
+		if at := strings.Index(l[start:], close); at >= 0 {
+			if p := (pos{k, start + at}); p.before(m.none) {
+				m.found = p
+				return true
+			}
+			break
+		}
+	}
+	m.none = q
+	return false
 }
 
 // text scans s from i inside a string or comment, up to its end.
@@ -320,12 +434,10 @@ func (lx *lexer) text(s string, i int) int {
 		switch {
 		case c == '\\' && lx.esc:
 			i += 2
-		case c == '$' && lx.tmpl && i+1 < len(s) && (s[i+1] == '{' || s[i+1] == '(' && lx.sy.multi == multiShell):
+		case c == '$' && lx.tmpl && i+1 < len(s) && (s[i+1] == '{' || s[i+1] == '(' && lx.sy.multi == multiShell) &&
+			lx.src.closes(string(closing(s[i+1])), lx.n, i+2):
 			// code up to the matching } or ), on this line or a later one
-			sub := subst{open: '{', close: '}', back: lx.close}
-			if s[i+1] == '(' {
-				sub.open, sub.close = '(', ')'
-			}
+			sub := subst{open: s[i+1], close: closing(s[i+1]), back: lx.close}
 			lx.stack = append(lx.stack, sub)
 			lx.in, lx.codeFrom = code, i+2
 			lx.to(i+2, subcode)
@@ -339,6 +451,13 @@ func (lx *lexer) text(s string, i int) int {
 		}
 	}
 	return i
+}
+
+func closing(open byte) byte {
+	if open == '(' {
+		return ')'
+	}
+	return '}'
 }
 
 // closed ends the string or comment just before i.
@@ -388,10 +507,10 @@ func (lx *lexer) code(s string, i int) int {
 			lx.to(i, str)
 			lx.in, lx.close, lx.esc, lx.tmpl, lx.quote = str, back, true, true, false
 		}
-	case c == '$' && next == '{' && sy.multi == multiShell:
+	case c == '$' && next == '{' && sy.multi == multiShell && lx.src.closes("}", lx.n, i+2):
 		lx.stack = append(lx.stack, subst{open: '{', close: '}', inSub: lx.codeKind() == subcode}) // # in it isn't a comment
 		return i + 2
-	case sy.line != "" && c == sy.line[0] && strings.HasPrefix(s[i:], sy.line) && (!sy.hashWord || i == 0 || s[i-1] == ' ' || s[i-1] == '\t') &&
+	case sy.line != "" && c == sy.line[0] && strings.HasPrefix(s[i:], sy.line) && (!sy.hashWord || i == 0 || strings.IndexByte(" \t;&|(", s[i-1]) >= 0) &&
 		!(sy.multi == multiShell && len(lx.stack) > 0 && lx.stack[len(lx.stack)-1].open == '{'): // ${x%%[ #]*}
 		if sy.luaLong && next == '-' {
 			if close, n := longBracket(s, i+2); n > 0 {
@@ -422,7 +541,7 @@ func (lx *lexer) code(s string, i int) int {
 			lx.codeFrom = -1
 		}
 		i = lx.open(i, 1, str, "`", sy.backtick == template)
-		lx.tmpl = sy.backtick == template
+		lx.tmpl = lx.in == str && sy.backtick == template
 		return i
 	case c == '"' || c == '\'':
 		if sy.triple != "" && strings.IndexByte(sy.triple, c) >= 0 && i+2 < len(s) && next == c && s[i+2] == c {
@@ -440,7 +559,7 @@ func (lx *lexer) code(s string, i int) int {
 		switch {
 		case sy.multi == multiShell: // '…' has no escapes, except $'…'; "…" has $(…) and ${…}
 			i = lx.open(i, 1, str, s[i:i+1], c == '"' || i > 0 && s[i-1] == '$')
-			lx.tmpl = c == '"'
+			lx.tmpl = lx.in == str && c == '"'
 			return i
 		case sy.multi == multiDQ && c == '"':
 			return lx.open(i, 1, str, `"`, true)
@@ -490,7 +609,7 @@ func (lx *lexer) code(s string, i int) int {
 		}
 		if n > 0 {
 			i = lx.open(i, n, str, `"`, false)
-			lx.quote = true
+			lx.quote = lx.in == str
 			return i
 		}
 	case c == '[' && sy.luaLong:
@@ -566,9 +685,10 @@ func longBracket(s string, i int) (close string, n int) {
 }
 
 // heredocStart reads <<TAG at s[i] (<<~TAG, <<-'TAG', and in shell
-// << TAG): the heredoc's lines start on the next line and end with a line
-// that is just TAG. It returns the index after TAG, or -1 when this is a
-// shift (1 << n, items << item) or no line ends it.
+// << TAG, <<\TAG, <<END-OF-HELP): the heredoc's lines start on the next
+// line and end with a line that is just TAG. It returns the index after
+// TAG, or -1 when this is a shift (1 << n, items << item) or no line ends
+// it.
 func (lx *lexer) heredocStart(s string, i int) int {
 	j := i + 2
 	if j < len(s) && (s[j] == '<' || s[j] == '=') {
@@ -588,9 +708,11 @@ func (lx *lexer) heredocStart(s string, i int) int {
 	if j < len(s) && (s[j] == '\'' || s[j] == '"') {
 		q = s[j]
 		j++
+	} else if j < len(s) && s[j] == '\\' && lx.sy.heredoc == hereShell {
+		j++ // <<\EOF: quoted like <<'EOF'
 	}
 	k := j
-	for k < len(s) && (isIdent(s[k]) && s[k] != '$') {
+	for k < len(s) && (isIdent(s[k]) && s[k] != '$' || k > j && (s[k] == '-' || s[k] == '.') && lx.sy.heredoc == hereShell) {
 		k++
 	}
 	if k == j || s[j] >= '0' && s[j] <= '9' {
@@ -621,7 +743,7 @@ func (src *source) terminated(tag string, trim bool, n int) bool {
 		for k, l := range src.lines {
 			l = strings.TrimSuffix(l, "\r")
 			t := strings.TrimLeft(l, " \t")
-			if t == "" || t[0] >= '0' && t[0] <= '9' || strings.IndexFunc(t, func(r rune) bool { return r > 127 || !isIdent(byte(r)) || r == '$' }) >= 0 {
+			if t == "" || t[0] >= '0' && t[0] <= '9' || strings.IndexFunc(t, func(r rune) bool { return r > 127 || !isIdent(byte(r)) && r != '-' && r != '.' || r == '$' }) >= 0 {
 				continue
 			}
 			if t == l {

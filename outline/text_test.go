@@ -2,6 +2,9 @@ package outline
 
 import (
 	"fmt"
+	"io/fs"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -40,6 +43,8 @@ func TestMultiline(t *testing.T) {
 		{"a.py", "# \"\"\" in a comment\ns = '\"\"\"'\ndef f():\n", "..."}, // nor open it
 		{"a.gd", "func f():\n\t\"\"\"\n\tdoc\n\t\"\"\"\n", "..ss"},
 		{"a.go", "/*\nfunc x() {}\n*/\nfunc y() {}\n", ".cc."},
+		{"a.js", "/*\n * license\n */ function f() {\n}\n", ".c.."}, // a name after the comment: a definition can start there
+		{"a.tsx", "{/*\n  note */}\n", ".c"},
 		{"a.go", "var p = `C:\\`\nfunc f() {}\n", ".."}, // no escapes in a raw string
 		{"a.go", "var r = '`'\nfunc f() {}\n", ".."},
 		{"a.ts", "const s = `\nfunction f() {\n`;\n", ".ss"},
@@ -92,6 +97,19 @@ func TestMultiline(t *testing.T) {
 		// C++14 digit separators aren't character literals
 		{"a.cpp", "if (x > 10'000) { /*\nint f();\n*/\n", ".cc"},
 		{"a.cpp", "c = u8'a'; /*\n*/\n", ".c"},
+		// a string or comment that can't end before the end of the file
+		// isn't one
+		{"a.tsx", "function A() {\n  return <kbd>`</kbd>;\n}\nfunction B() {\n}\n", "....."},
+		{"a.py", "x = 1\n\"\"\"never closed\ndef f():\n", "..."},
+		{"a.js", "/* never closed\nfunction f() {}\n", ".."},
+		{"a.sh", "echo it's\nf() {\n}\n", "..."},
+		{"a.rb", "=begin\ndef f\n", ".."},
+		{"a.ts", "const s = `${\nfunction f() {\n`;\n", ".ss"}, // a ${ without a } is text
+		// shell apostrophes that aren't quotes, with a quote after them
+		{"a.sh", "cat <<\\EOF\nDon't run this as root.\nEOF\nf() {\n  echo 'x'\n}\n", ".ss..."},
+		{"a.sh", "cat <<END-OF-HELP\nDon't forget.\nEND-OF-HELP\nf() {\n  echo 'x'\n}\n", ".ss..."},
+		{"a.sh", "cd /tmp;# don't care\nf() {\n  echo 'x'\n}\n", "...."},
+		{"a.sh", "(cd /tmp)&# it's\nx|# it's\nf() {\n  echo 'x'\n}\n", "....."},
 	} {
 		if got := lineLabels(c.name, c.src); got != c.want {
 			t.Errorf("%s %q:\n got %s\nwant %s", c.name, c.src, got, c.want)
@@ -107,8 +125,10 @@ func TestMultilineTemplateCode(t *testing.T) {
 	}{
 		{"const s = `a ${b} c ${ {d: 1}.d } ${}`;\n", ".", map[int][][2]int{1: {{15, 16}, {22, 32}, {36, 36}}}},
 		{"const s = `${\"}\"}`;\nfunction f() {}\n", "..", map[int][][2]int{1: {{13, 16}}}}, // a } in a string doesn't close it
-		// a ${…} that spans lines is code to its }, nested templates aren't
-		{"const t = `\n  ${e}\n  ${f(\n  g)} x\n`;\n", ".ssss", map[int][][2]int{2: {{4, 5}}, 3: {{4, 6}}, 4: {{0, 4}}}},
+		// a ${…} that spans lines is code to its }, nested templates aren't;
+		// a line that starts in that code with a name isn't labelled
+		{"const t = `\n  ${e}\n  ${f(\n  g)} x\n`;\n", ".ss.s", map[int][][2]int{2: {{4, 5}}, 3: {{4, 6}}, 4: {{0, 4}}}},
+		{"const t = `\n  ${f(\n  )} x\n`;\n", ".sss", map[int][][2]int{2: {{4, 6}}, 3: {{0, 3}}}},
 		{"const h = `\n  ${items.map((item) => `\n    <li>Don't ${item}</li>`).join(\"\")}\n`;\nfunction after() {}\n",
 			".sss.", map[int][][2]int{2: {{4, 24}}, 3: {{16, 20}, {27, 37}}}},
 	} {
@@ -154,11 +174,15 @@ func TestMultilineLongLines(t *testing.T) {
 			t.Errorf("%s %q: 500 repeats took %v, 8000 took %v", c.name, c.unit, ts, tb)
 		}
 	}
-	// many lines: heredocs without an end, siblings in one block
+	// many lines: heredocs without an end, siblings in one block,
+	// definitions whose brackets never close
 	for _, c := range []struct{ name, head, line, tail string }{
 		{"a.sh", "", "f%d() { cat <<T%d; }\n", ""},
 		{"a.rb", "", "def f%d; x <<T%d; end\n", ""},
 		{"a.js", "class A {\n", "  m%d() {\n    return %d;\n  }\n", "}\n"},
+		{"a.js", "", "function f%d() { // %d\n", ""},
+		{"a.ts", "", "export const a%d = () => [\"x\", %d,\n", ""},
+		{"a.rs", "", "pub static A%d: &[&str] = &[\"x\", \"%d\",\n", ""},
 	} {
 		lines := func(n int) string {
 			var b strings.Builder
@@ -186,6 +210,42 @@ func fastest(name, src string) time.Duration {
 		best = min(best, time.Since(start))
 	}
 	return best
+}
+
+// Over the corpus, Parse drops a definition exactly when Multiline labels
+// its line: a tool that labels hits with Multiline and one that numbers
+// symbols with Parse agree on what is text.
+func TestParseDropsWhatMultilineLabels(t *testing.T) {
+	dropped := 0
+	err := filepath.WalkDir("testdata/corpus", func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		kept := map[int]bool{}
+		for _, s := range Parse(path, data, 1<<20) {
+			kept[s.Line] = true
+		}
+		in := Multiline(path, data).In
+		for _, s := range parse(path, data, 1<<20, true) {
+			if label := in[s.Line]; kept[s.Line] == (label != "") {
+				t.Errorf("%s:%d %s %s: kept by Parse %v, labelled %q by Multiline", path, s.Line, s.Kind, s.Name, kept[s.Line], label)
+			}
+			if !kept[s.Line] {
+				dropped++
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dropped < 20 {
+		t.Errorf("only %d definitions in text in the corpus: the test checks little", dropped)
+	}
 }
 
 // A definition inside a string or comment that spans lines isn't one,

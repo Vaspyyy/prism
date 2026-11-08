@@ -236,9 +236,15 @@ func Read(path string) (data []byte, ok bool) {
 // Parse returns the symbols of a file's contents (at most limit), with
 // their ends and parents. name only selects the language. A definition
 // whose line starts inside a multi-line string or comment (a docstring, a
-// template string, a block comment: the lines Multiline labels) isn't one,
-// so every tool sees the same symbols and ordinals.
+// template string, a block comment: exactly the lines Multiline labels)
+// isn't one, so every tool sees the same symbols and ordinals.
 func Parse(name string, data []byte, limit int) []Symbol {
+	return parse(name, data, limit, false)
+}
+
+// parse is Parse; with keepText it also looks for definitions on the lines
+// Multiline labels (for a test that they are the ones Parse drops).
+func parse(name string, data []byte, limit int, keepText bool) []Symbol {
 	lg := langOf(name)
 	if lg == nil || len(data) > MaxSize || bytes.IndexByte(data[:min(len(data), 8000)], 0) >= 0 {
 		return nil
@@ -252,7 +258,7 @@ func Parse(name string, data []byte, limit int) []Symbol {
 	if sy == nil {
 		sy = noText
 	}
-	src := &source{sy: sy, lines: lines}
+	src := newSource(sy, lines, len(data))
 	var lx *lexer
 	if !md {
 		lx = newLexer(src)
@@ -273,27 +279,24 @@ func Parse(name string, data []byte, limit int) []Symbol {
 		if inFence {
 			continue
 		}
-		afterComment := false
+		inText := false
 		if lx != nil {
-			inText, inComment := lx.in != code, lx.in == comment // the code in a template's ${…} is code
-			lx.scan(i)
+			inText = lx.in != code // the code in a template's ${…} is code
+			label := lx.line(i)
 			if inText {
 				if text == nil {
 					text = make([]bool, len(lines))
 				}
 				text[i] = true
-				// unless a block comment ends on the line with code after
-				// it: "*/ function f() {" in a bundle
-				afterComment = inComment && len(lx.segs) > 1 && lx.segs[1].kind == code
-				if !afterComment {
-					continue
-				}
+			}
+			if label != "" && !keepText {
+				continue // no definition starts here: Multiline labels the line
 			}
 		}
 		if full {
 			continue // past the limit only the text lines are still needed, for indentEnd
 		}
-		if strip || afterComment {
+		if strip || inText { // a name after a comment that closes on the line: */ function f() { in a bundle
 			line = stripComments(line, lx.segs)
 			if strings.TrimSpace(line) == "" {
 				continue
@@ -443,6 +446,9 @@ func braceEnd(src *source, start, limit int, define bool) int {
 			default:
 				return start + 1
 			}
+		}
+		if src.endBudget -= len(lines[j]) + 1; src.endBudget < 0 {
+			break // as if the file ended here
 		}
 		lx.scan(j)
 		line := lines[j]

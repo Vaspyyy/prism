@@ -127,8 +127,11 @@ scala/Store.scala
   3-10 class Store scala/Store.scala:Store#1 | class Store
   12-14 object Store scala/Store.scala:Store#2 | object Store
 sh/apostrophes.sh
-  4-18 function usage sh/apostrophes.sh:usage | usage()
-  20-27 function clean sh/apostrophes.sh:clean | clean()
+  4-8 function usage sh/apostrophes.sh:usage | usage()
+  10-12 function build sh/apostrophes.sh:build | build()
+  14-18 function help sh/apostrophes.sh:help | help()
+  20-23 function clean sh/apostrophes.sh:clean | clean()
+  25-27 function after sh/apostrophes.sh:after | after()
 sh/build.sh
   3-9 function usage sh/build.sh:usage | usage()
   11-13 function clean sh/build.sh:clean | function clean
@@ -159,11 +162,15 @@ ts/model.ts
   24-26 method Model.size ts/model.ts:Model.size | get size(): number
   33-35 function load ts/model.ts:load | export async function load(id: Id): Promise<Message>
 ts/shortcuts.tsx
-  2-14 function Shortcuts ts/shortcuts.tsx:Shortcuts | export function Shortcuts()
+  2-8 function Shortcuts ts/shortcuts.tsx:Shortcuts | export function Shortcuts()
+  10-12 function Other ts/shortcuts.tsx:Other | function Other()
+  14-14 const Third ts/shortcuts.tsx:Third | const Third = () => <p>third</p>;
 ts/view.tsx
   3-8 function View ts/view.tsx:View | export function View(props:
   10-12 const Item ts/view.tsx:Item | export const Item = (
 vue/Help.vue
+  9-11 method save vue/Help.vue:save | save()
+  15-17 function helper vue/Help.vue:helper | function helper()
 vue/List.vue
   10-12 method data vue/List.vue:data | data()
   15-17 function sortItems vue/List.vue:sortItems | function sortItems(items)
