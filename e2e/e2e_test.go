@@ -7,6 +7,7 @@
 package e2e
 
 import (
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14,6 +15,9 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/Vaspyyy/prism/ref"
+	"github.com/Vaspyyy/prism/report"
 )
 
 // the fixture: a commit that changes List and breaks the test that calls it
@@ -243,4 +247,129 @@ func TestRefsRoundTrip(t *testing.T) {
 		t.Errorf("recap --show with a location: exit %d:\n%s", code, out)
 	}
 	t.Logf("%d refs from 4 tools, all accepted", len(printed))
+}
+
+// runJSON runs a tool with --json and checks the envelope's shape.
+func (e *env) runJSON(tool string, args ...string) (*report.Decoded, []byte, int) {
+	e.t.Helper()
+	out, code := e.run(tool, args...)
+	d, err := report.Check([]byte(out))
+	if err != nil {
+		e.t.Fatalf("%s %v: not a valid envelope: %v\n%s", tool, args, err, out)
+	}
+	if d.Tool != tool {
+		e.t.Errorf("%s %v: envelope says tool %q", tool, args, d.Tool)
+	}
+	return d, []byte(out), code
+}
+
+func decode(t *testing.T, d *report.Decoded, v any) {
+	t.Helper()
+	if err := json.Unmarshal(d.Result, v); err != nil {
+		t.Fatalf("%s result: %v\n%s", d.Tool, err, d.Result)
+	}
+}
+
+// TestJSONRoundTrip is Phase 2's done criterion: every tool's --json is a
+// valid envelope, and every ref in it is accepted by the tools that take
+// symbols.
+func TestJSONRoundTrip(t *testing.T) {
+	e := setup(t)
+	var refs []string
+	collect := func(data []byte) {
+		rs, err := report.Refs(data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		refs = append(refs, rs...)
+	}
+
+	d, data, _ := e.runJSON("recap", "--json", "show", "HEAD")
+	var rc report.Recap
+	decode(t, d, &rc)
+	var changed []string
+	for _, f := range rc.Files {
+		for _, c := range f.Changes {
+			changed = append(changed, c.Symbol.Ref)
+		}
+	}
+	need(t, "recap --json show", changed, "internal/files/files.go:List")
+	if rc.Commit == nil || rc.Commit.Subject != "List: match prefixes" || rc.Commit.Date.IsZero() {
+		t.Errorf("recap --json show: commit %+v", rc.Commit)
+	}
+	collect(data)
+
+	var outlined []string
+	for _, f := range []string{"internal/files/files.go", "main.go"} {
+		d, data, _ := e.runJSON("glint", "-A", "--json", f)
+		var g report.Glint
+		decode(t, d, &g)
+		if g.File == nil || g.File.Path != f {
+			t.Fatalf("glint -A --json %s: file %+v", f, g.File)
+		}
+		for _, s := range g.File.Symbols {
+			outlined = append(outlined, s.Ref)
+		}
+		collect(data)
+	}
+	need(t, "glint -A --json", outlined, "internal/files/files.go:globSet.match", "main.go:init#1", "main.go:init#2")
+
+	d, _, _ = e.runJSON("glint", "--json", "internal")
+	var listing report.Glint
+	decode(t, d, &listing)
+	if listing.Items == nil || len(*listing.Items) == 0 || listing.Dir == "" {
+		t.Errorf("glint --json listing: %+v", listing)
+	}
+
+	d, data, _ = e.runJSON("seek", "--json", "-d", "List")
+	var sk report.Seek
+	decode(t, d, &sk)
+	if len(sk.Definitions) != 1 || sk.Definitions[0].Ref != "internal/files/files.go:List" {
+		t.Errorf("seek --json -d List: definitions %+v", sk.Definitions)
+	}
+	collect(data)
+
+	d, data, code := e.runJSON("crux", "--json", "go", "test", "./...")
+	var cx report.Crux
+	decode(t, d, &cx)
+	if code == 0 || cx.Exit == 0 || len(cx.Failures) == 0 {
+		t.Fatalf("crux --json go test: exit %d, result %+v", code, cx)
+	}
+	if f := cx.Failures[0]; f.Loc == nil || f.Loc.In != "internal/files/files_test.go:TestList" {
+		t.Errorf("crux --json: first failure %+v", f)
+	}
+	collect(data)
+
+	// a ref that names nothing is an error envelope with candidates
+	d, _, code = e.runJSON("seek", "--json", "internal/files/files.go:Nope")
+	if code == 0 || d.Error == nil || d.Error.Code != report.CodeNoMatch || !slices.Contains(d.Error.Candidates, "internal/files/files.go:List") {
+		t.Errorf("seek --json with an unknown ref: exit %d, error %+v", code, d.Error)
+	}
+
+	n := 0
+	for _, r := range refs {
+		if !ref.Parse(r, nil).HasTarget {
+			continue // a file, not a symbol
+		}
+		n++
+		d, _, code := e.runJSON("seek", "--json", r)
+		var s report.Seek
+		if d.Error == nil {
+			decode(t, d, &s)
+		}
+		if code != 0 || len(s.Definitions) == 0 {
+			t.Errorf("seek --json %s: exit %d, error %+v, definitions %+v", r, code, d.Error, s.Definitions)
+		}
+	}
+	for _, r := range changed {
+		d, _, code := e.runJSON("recap", "--json", "show", "HEAD", "--show", r)
+		var s report.Recap
+		if d.Error == nil {
+			decode(t, d, &s)
+		}
+		if code != 0 || len(s.Show) == 0 {
+			t.Errorf("recap --json show HEAD --show %s: exit %d, error %+v", r, code, d.Error)
+		}
+	}
+	t.Logf("%d symbol refs from the JSON of 4 tools, all accepted", n)
 }
