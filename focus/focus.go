@@ -53,22 +53,32 @@ type Focus struct {
 }
 
 // Name is how reports name the focus: "commit b681ef1" for one commit, or
-// the range as stored.
+// the range as stored with the commits it resolved to, "HEAD~1..HEAD
+// (1f0e2d3..b681ef1)", since names like HEAD move and a report must say
+// what to repeat it with.
 func (f *Focus) Name() string {
 	if f == nil {
 		return ""
 	}
 	if strings.Contains(f.Range, "..") {
-		return f.Range
+		resolved := short(f.Old) + ".." + short(f.New)
+		if f.Old == "" || f.New == "" || f.Range == resolved {
+			return f.Range
+		}
+		return f.Range + " (" + resolved + ")"
 	}
-	h := f.New
-	if len(h) > 7 {
-		h = h[:7]
-	}
+	h := short(f.New)
 	if h == "" {
 		h = f.Range
 	}
 	return "commit " + h
+}
+
+func short(h string) string {
+	if len(h) > 7 {
+		return h[:7]
+	}
+	return h
 }
 
 // Has reports whether a symbol ref is in the focus.

@@ -47,8 +47,19 @@ func TestRoundTrip(t *testing.T) {
 	if r == nil || !r.Failing("a_test.go:TestF") || r.Failing("a.go:F0") || len(r.Tests) != 1 || len(r.In) != 1 || r.In[0] != "a.go:G" {
 		t.Fatalf("last run = %+v", r)
 	}
-	if f.Name() != "commit n" || (&Focus{Range: "main...feature"}).Name() != "main...feature" || (&Focus{New: "b681ef1cccc"}).Name() != "commit b681ef1" {
-		t.Errorf("Name = %q", f.Name())
+	for _, c := range []struct {
+		f    *Focus
+		want string
+	}{
+		{f, "commit n"},
+		{&Focus{New: "b681ef1cccc"}, "commit b681ef1"},
+		{&Focus{Range: "main...feature"}, "main...feature"},
+		{&Focus{Range: "HEAD~1..HEAD", Old: "1f0e2d3aaaa", New: "b681ef1cccc"}, "HEAD~1..HEAD (1f0e2d3..b681ef1)"},
+		{&Focus{Range: "1f0e2d3..b681ef1", Old: "1f0e2d3aaaa", New: "b681ef1cccc"}, "1f0e2d3..b681ef1"},
+	} {
+		if got := c.f.Name(); got != c.want {
+			t.Errorf("Name(%+v) = %q, want %q", c.f, got, c.want)
+		}
 	}
 	if _, err := os.Stat(filepath.Join(s.dir, "focus.json")); err != nil {
 		t.Error("no session: focus.json expected")
