@@ -3,9 +3,9 @@
 // turns paths typed on the command line into the repo-relative form that
 // tools print, so a path printed by one tool is accepted by the others.
 //
-// Detect runs a few quick git commands and keeps nothing between runs, so
-// what it reports is never stale. Anything slower (Dirty) is computed on
-// demand.
+// Detect runs two git commands at the same time (three for a detached
+// HEAD) and keeps nothing between runs, so what it reports is never stale.
+// Anything slower (Dirty) is computed on demand.
 package repo
 
 import (
@@ -57,35 +57,55 @@ func Detect(dir string) (*Info, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Two git calls, run at the same time: where the repository is, and its
+	// branches. HEAD's branch is marked with '*' in the second.
+	var refs string
+	done := make(chan struct{})
+	go func() {
+		refs, _ = git(real, "for-each-ref", "--format=%(HEAD)%00%(refname)%00%(objectname)%00%(symref)",
+			"refs/heads/", "refs/remotes/origin/HEAD", "refs/remotes/origin/main", "refs/remotes/origin/master")
+		close(done)
+	}()
 	out, err := git(real, "rev-parse", "--path-format=absolute", "--show-toplevel", "--git-dir", "--git-common-dir")
+	<-done
 	lines := strings.Split(out, "\n")
 	if err != nil || len(lines) != 3 {
 		return &Info{Root: real}, nil
 	}
 	in := &Info{Root: lines[0], Git: true, GitDir: lines[1], CommonDir: lines[2]}
-	in.Head, _ = git(in.Root, "rev-parse", "-q", "--verify", "HEAD^{commit}")
-	in.Branch, _ = git(in.Root, "symbolic-ref", "-q", "--short", "HEAD")
-	in.DefaultBranch, in.DefaultRef = defaultBranch(in.Root)
+	have := map[string]bool{}
+	originHead := ""
+	for _, l := range strings.Split(refs, "\n") {
+		f := strings.Split(l, "\x00")
+		if len(f) != 4 {
+			continue
+		}
+		have[f[1]] = true
+		if f[0] == "*" {
+			in.Branch, in.Head = strings.TrimPrefix(f[1], "refs/heads/"), f[2]
+		}
+		if f[1] == "refs/remotes/origin/HEAD" {
+			originHead = f[3]
+		}
+	}
+	if in.Branch == "" { // HEAD is detached, or on a branch with no commits yet
+		in.Branch, _ = git(in.Root, "symbolic-ref", "-q", "--short", "HEAD")
+		if in.Branch == "" {
+			in.Head, _ = git(in.Root, "rev-parse", "-q", "--verify", "HEAD^{commit}")
+		}
+	}
+	in.DefaultBranch, in.DefaultRef = defaultBranch(originHead, have)
 	return in, nil
 }
 
-// defaultBranch finds the branch to compare against: origin/HEAD if the
+// defaultBranch picks the branch to compare against: origin/HEAD if the
 // remote has one, else the first of origin/main, origin/master, main and
 // master that exists.
-func defaultBranch(root string) (name, ref string) {
-	if r, err := git(root, "symbolic-ref", "-q", "refs/remotes/origin/HEAD"); err == nil && r != "" {
-		return strings.TrimPrefix(r, "refs/remotes/origin/"), r
+func defaultBranch(originHead string, have map[string]bool) (name, ref string) {
+	if originHead != "" {
+		return strings.TrimPrefix(originHead, "refs/remotes/origin/"), originHead
 	}
-	candidates := []string{"refs/remotes/origin/main", "refs/remotes/origin/master", "refs/heads/main", "refs/heads/master"}
-	out, err := git(root, append([]string{"for-each-ref", "--format=%(refname)"}, candidates...)...)
-	if err != nil {
-		return "", ""
-	}
-	have := map[string]bool{}
-	for _, l := range strings.Split(out, "\n") {
-		have[l] = true
-	}
-	for _, c := range candidates {
+	for _, c := range []string{"refs/remotes/origin/main", "refs/remotes/origin/master", "refs/heads/main", "refs/heads/master"} {
 		if have[c] {
 			return path.Base(c), c
 		}

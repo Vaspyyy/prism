@@ -279,3 +279,25 @@ func TestMatch(t *testing.T) {
 		}
 	}
 }
+
+func BenchmarkDetect(b *testing.B) {
+	b.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	b.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	b.Setenv("GIT_AUTHOR_NAME", "Test")
+	b.Setenv("GIT_AUTHOR_EMAIL", "test@example.com")
+	b.Setenv("GIT_COMMITTER_NAME", "Test")
+	b.Setenv("GIT_COMMITTER_EMAIL", "test@example.com")
+	dir := b.TempDir()
+	for _, args := range [][]string{{"init", "-q", "-b", "main"}, {"commit", "-q", "--allow-empty", "-m", "first"}} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			b.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	for b.Loop() {
+		if _, err := Detect(dir); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
