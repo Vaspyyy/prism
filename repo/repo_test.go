@@ -141,6 +141,24 @@ func TestDefaultBranchFromRemote(t *testing.T) {
 	}
 }
 
+func TestIsRev(t *testing.T) {
+	root := newRepo(t, filepath.Join(isolate(t), "r"), "main")
+	head := run(t, root, "rev-parse", "HEAD")
+	run(t, root, "tag", "v1")
+	in := detect(t, root)
+	for rev, want := range map[string]bool{
+		head: true, head[:7]: true, "HEAD": true, "main": true, "v1": true,
+		"HEAD~1": false, "me": false, "": false, "--all": false, "HEAD:a.go": false,
+	} {
+		if got := in.IsRev(rev); got != want {
+			t.Errorf("IsRev(%q) = %v, want %v", rev, got, want)
+		}
+	}
+	if (&Info{Root: root}).IsRev("HEAD") {
+		t.Error("IsRev outside git should be false")
+	}
+}
+
 func TestDetectOutsideGit(t *testing.T) {
 	dir := filepath.Join(isolate(t), "plain")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
