@@ -95,17 +95,24 @@ Done when: the acceptance test below passes.
 
 Things the work so far turned up that belong to a later step:
 
-- **outline** doesn't recognise generic arrow functions in TypeScript (`export const card = <Message>(...) =>`), so lines inside them count as outside any definition. A parser change, so it should come with the outline diff check in CI (step 3 of the CI plan).
+- **outline** doesn't recognise generic arrow functions in TypeScript (`export const card = <Message>(...) =>`), so lines inside them count as outside any definition. The golden corpus (`outline/testdata/corpus`) now shows the effect of such a change.
+- **outline** doesn't report a Rust function written on one line with its attribute (`#[test] fn x() {}`), so crux and seek can't name such a test. testcmd works around it for its same-path check by splitting the line first.
+- **outline**: a lone backtick in JSX text or Vue/Svelte markup still pairs with the next real template string's backtick. A lexer can't tell markup text from a template; only a backtick that nothing closes is ignored.
 - **crux** doesn't parse `go vet`'s type-check errors (`vet: path:line:col: message`); they show as plain output lines, without a location or `in` line.
+- **crux reruns**: a Go test that failed in its own body reruns its passing subtests without a caveat (testcmd only knows the subtests go printed). crux counts a parent test that only printed `t.Log` output as failing on its own, because go's plain output can't tell a log from an error; the rerun then takes the whole parent, with a caveat. A pytest rerun of a parametrized rerun gives no further rerun line.
+- **testcmd** is over-cautious with cargo: a crate whose sources start an item with `#[path` or `include!(` anywhere, test fixtures included, gets no command, and `--workspace` caveats count every package under the workspace root.
 - **seek** has no agent skill (`skill/SKILL.md`), unlike glint, recap and crux, so agents only learn its ref mode from the README. Its README GIF still shows a range that includes the doc comment.
-- **report** gaps left after Phase 2: a moved definition in a new file can't say its signature changed (`RecapDef` has no `old_sig`), and `last_commit.commits` in glint is 1 unless `-H` asked for the count (it should be left out instead). seek passes a file kind `long lines` that the docs don't list.
-- **glint**: `-A -M` orders children of equal size differently between runs, and files over 4 MiB show 0 lines (line counting stops at that size).
-- **glint** had a data race in directory listing that CI's race detector caught (fixed in glint#5).
-- **changes vs seek**: seek leaves out definitions that outline finds inside docstrings and template strings; `prism/changes` keeps them. Ordinals (`#N`) can then differ between the two and a mark is missed. Rare; the fix is one shared filter in outline.
-- **crux** has no "rerun only the failed tests" suggestion: `testcmd` would drop the original command's flags (`-tags`, `-race`). It needs a way to carry them over.
+- **report** gaps left after Phase 2: a moved definition in a new file can't say its signature changed (`RecapDef` has no `old_sig`), and `last_commit.commits` in glint is 1 unless `-H` asked for the count (it should be left out instead). seek passes a file kind `long lines` that the docs don't list. recap's note on special files is only in `notes`; `RecapFile` has no field for it.
+- **glint**: `-A -M` orders children of equal size differently between runs, and files over 4 MiB show 0 lines (line counting stops at that size). In workspace maps, a loose folder too big to open counts its glance line twice against the budget.
 - **crux** mention suggestions can still match a function name shared across packages (two `New`s) on text alone; ruling that out needs a repo-wide index.
-- **recap** hangs when the working tree has a symlink to a FIFO or device, already in 0.3.0: its diff reads working-tree files directly (`collect` in main.go, `gitx.Content`). It should read a symlink as git stores it (the target's path) and skip non-regular files, like `outline.Read`.
-- **glint** doesn't mark repositories nested inside a non-git folder it lists (`glint -A ~/Projekte`): Prism's change detection per repo would add about 140 ms for 52 repos. Cheaper ways: load scoped, files-only context for the few projects the map opens up, or let Prism reuse the `git status` glint already ran.
+
+Fixed since v1:
+
+- **Ordinals differed between seek and the other tools** when a definition sat inside a docstring or template string. outline now drops definitions inside text that spans lines, and `outline.Multiline` gives seek the same classification (Prism 0.8.0, seek 0.5.0).
+- **crux had no "rerun only the failed tests" suggestion.** `testcmd.Rerun` keeps the original command's flags and reruns exactly what failed, Go subtests included (Prism 0.8.0 and 0.8.1, crux 0.7.0).
+- **recap hung on a symlink to a FIFO or device.** It now reads symlinks as git stores them and leaves special files out, and `outline.Read` never follows a symlink or blocks (Prism 0.8.0, recap 0.4.1).
+- **glint didn't mark repositories nested in a folder it lists** (`glint -A ~/Projekte`). It now loads scoped, lock-free context for the projects the map opens up (glint 0.10.0).
+- **glint** had a data race in directory listing that CI's race detector caught (glint#5).
 - **v0.6.3** of Prism was tagged on the wrong commit (the same code as v0.6.2) and is retracted in go.mod; v0.6.4 is that release.
 
 ## Decisions taken
