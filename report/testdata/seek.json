@@ -1,0 +1,76 @@
+{
+  "schema": "prism/1",
+  "tool": "seek",
+  "version": "1.2.3",
+  "args": [
+    "internal/files/files.go:List"
+  ],
+  "repo": {
+    "root": "/work/shop",
+    "git": true,
+    "git_dir": "/work/shop/.git",
+    "head": "b681ef1c0ffee",
+    "branch": "main",
+    "default_branch": "main",
+    "dirty": false
+  },
+  "context": null,
+  "result": {
+    "pattern": "List",
+    "target": "internal/files/files.go:List",
+    "definitions": [
+      {
+        "ref": "internal/files/files.go:List",
+        "path": "internal/files/files.go",
+        "name": "List",
+        "kind": "func",
+        "line": 73,
+        "end": 107,
+        "doc": [
+          70,
+          72
+        ],
+        "sig": "func List(roots []string, o Options) ([]string, error)"
+      }
+    ],
+    "groups": [
+      {
+        "path": "main.go",
+        "symbol": {
+          "ref": "main.go:run",
+          "path": "main.go",
+          "name": "run",
+          "kind": "func",
+          "line": 81,
+          "end": 200
+        },
+        "hits": [
+          {
+            "line": 104,
+            "col": 22,
+            "text": "paths, err := files.List(o.paths, opts)"
+          }
+        ]
+      },
+      {
+        "path": "internal/files/files.go",
+        "symbol": null,
+        "hits": [
+          {
+            "line": 32,
+            "text": "// Nested lists what List left out",
+            "label": "comment"
+          }
+        ]
+      }
+    ],
+    "counts": {
+      "hits": 2,
+      "files": 2,
+      "definitions": 1
+    }
+  },
+  "links": [],
+  "next": [],
+  "truncated": null
+}

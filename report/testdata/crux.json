@@ -1,0 +1,61 @@
+{
+  "schema": "prism/1",
+  "tool": "crux",
+  "version": "1.2.3",
+  "args": [
+    "go",
+    "test",
+    "./..."
+  ],
+  "repo": {
+    "root": "/work/shop",
+    "git": true,
+    "git_dir": "/work/shop/.git",
+    "head": "b681ef1c0ffee",
+    "branch": "main",
+    "default_branch": "main",
+    "dirty": false
+  },
+  "context": null,
+  "result": {
+    "command": [
+      "go",
+      "test",
+      "./..."
+    ],
+    "exit": 1,
+    "duration_ms": 154,
+    "tools": [
+      "go test"
+    ],
+    "tests": {
+      "passed": 41,
+      "failed": 1,
+      "skipped": 0,
+      "packages_ok": 3,
+      "packages_failed": 1
+    },
+    "errors": [],
+    "failures": [
+      {
+        "kind": "fail",
+        "title": "TestList",
+        "loc": {
+          "path": "internal/files/files_test.go",
+          "line": 31,
+          "in": "internal/files/files_test.go:check"
+        },
+        "test": "internal/files/files_test.go:TestList",
+        "body": [
+          "got 2 files, want 3"
+        ]
+      }
+    ],
+    "warnings": [],
+    "lines": 12,
+    "log": "/home/u/.local/state/crux/logs/x.log"
+  },
+  "links": [],
+  "next": [],
+  "truncated": null
+}

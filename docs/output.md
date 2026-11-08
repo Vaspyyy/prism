@@ -28,28 +28,26 @@ These apply to all four tools, on top of each tool's own layout.
 
 ## JSON envelope
 
-One JSON document per run (not JSON Lines): budgets already bound the size, and a single document is easiest for `jq` and for Go's decoder.
+One JSON document per run (not JSON Lines): budgets already bound the size, and a single document is easiest for `jq` and for Go's decoder. It goes to stdout, also on failure, and the tool keeps its usual exit code.
+
+The shape is defined in Go in [`prism/report`](../report): the envelope and shared objects in `report.go`, each tool's result in `results.go`. Golden files in [`report/testdata`](../report/testdata) show a full example per tool. Programs reading the output can use `report.Check`, which also rejects a schema version they don't know, and `report.Refs`, which collects every ref in a document.
 
 ```json
 {
   "schema": "prism/1",
   "tool": "seek",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "args": ["-d", "List"],
   "repo": {
     "root": "/home/ransom/Projekte/seek",
+    "git": true,
     "git_dir": "/home/ransom/Projekte/seek/.git",
     "head": "b681ef1c…",
     "branch": "main",
     "default_branch": "main",
     "dirty": false
   },
-  "context": {
-    "changed": { "base": "HEAD", "symbols": 0 },
-    "focus": null,
-    "last_run": null,
-    "applied": []
-  },
+  "context": null,
   "result": { },
   "links": [ ],
   "next": [ ],
@@ -62,14 +60,17 @@ One JSON document per run (not JSON Lines): budgets already bound the size, and 
 | `schema` | `prism/<major>`. See [versioning](#versioning). |
 | `tool`, `version` | which tool and release produced it |
 | `args` | the arguments after the tool name, as given |
-| `repo` | from `prism/repo`; `null` outside a git repo |
-| `context` | what context was available and what it was used for (`applied`: any of `rank`, `mark`, `fill`) |
-| `result` | tool-specific, below |
+| `repo` | from `prism/repo`. Always present: outside git, `git` is false and `root` is the working directory, so paths can always be made absolute |
+| `context` | what context the run used (`applied`: any of `rank`, `mark`, `fill`); `null` until the tools use context ([context](context.md)) |
+| `result` | the tool's result, below; left out when `error` is set |
+| `error` | why the run failed, instead of `result` |
 | `links` | relations between symbols, each with a basis (see [evidence](evidence.md)) |
 | `next` | the same suggestions as the `next:` lines: `{ "cmd": "...", "why": "..." }` |
 | `truncated` | `null`, or `{ "shown": 120, "total": 431 }` when a limit cut the result |
 
-All names are `snake_case`. Lines are 1-based, ends inclusive. Paths are repo-relative like in text output; `repo.root` makes them absolute.
+All names are `snake_case`. Lines are 1-based, ends inclusive. Paths are repo-relative like in text output; `repo.root` makes them absolute. Lists that can be empty are always present (`[]`); optional values are left out when they don't apply. Times are RFC 3339 with the offset.
+
+Fields named `ref`, `in`, `test`, `target`, `from`, `to` and `old_ref` always hold refs, and no other field does, so a program can find every ref without knowing each tool's result.
 
 ## Shared objects
 
@@ -85,10 +86,11 @@ All names are `snake_case`. Lines are 1-based, ends inclusive. Paths are repo-re
   "end": 107,
   "doc": [70, 72],
   "sig": "func List(roots []string, o Options) ([]string, error)",
-  "rev": null,
   "marks": ["changed"]
 }
 ```
+
+`doc` (the doc comment's lines), `sig`, `rev` (set for a symbol as of a commit) and `marks` are optional.
 
 **Location**: a place in a file, plus the symbol containing it (if any).
 
@@ -102,7 +104,7 @@ All names are `snake_case`. Lines are 1-based, ends inclusive. Paths are repo-re
 { "from": "internal/files/files_test.go:TestList", "to": "internal/files/files.go:List", "rel": "mentions", "basis": "reference", "at": "internal/files/files_test.go:12" }
 ```
 
-**Error**: on failure the envelope carries `error` instead of `result`. Ambiguity and no-match include candidates, so a program can pick one without parsing text.
+**Error**: on failure the envelope carries `error` instead of `result`. Codes: `no_match` (a ref or name named nothing), `ambiguous` (it named more than the command can take), `usage` (bad arguments), `failed` (anything else). No-match and ambiguity include candidate refs, so a program can pick one without parsing text.
 
 ```json
 { "error": { "code": "ambiguous", "message": "\"Open\" matches 2 definitions", "candidates": ["a.go:Repo.Open", "b.go:File.Open"] } }
@@ -110,55 +112,12 @@ All names are `snake_case`. Lines are 1-based, ends inclusive. Paths are repo-re
 
 ## Tool results
 
-Drafts for v1. Each tool's `result` reuses the shared objects wherever it can.
+Summaries; the Go types in `report/results.go` are authoritative.
 
-**seek**
-
-```json
-{
-  "pattern": "List",
-  "target": "internal/files/files.go:List",
-  "definitions": [ "Symbol…" ],
-  "groups": [
-    { "in": "Symbol… (or null for lines outside definitions)", "path": "main.go",
-      "hits": [ { "line": 104, "text": "paths, err := files.List(o.paths, files.Options{…})", "writes": false } ] }
-  ],
-  "counts": { "hits": 6, "files": 2, "definitions": 1 }
-}
-```
-
-**recap**
-
-```json
-{
-  "from": "b681ef1^", "to": "b681ef1",
-  "commit": { "rev": "b681ef1c…", "author": "Vaspyyy", "date": "2026-11-05T00:56:00+01:00", "message": "Use glint 0.6.1" },
-  "files": [
-    { "path": "internal/files/files.go", "old_path": null, "status": "modified", "added": 42, "removed": 2,
-      "changes": [ { "what": "changed", "symbol": "Symbol…", "old_name": null, "old_sig": null, "new_sig": null, "added": 1, "removed": 1 } ] }
-  ]
-}
-```
-
-**crux**
-
-```json
-{
-  "command": ["go", "test", "./..."],
-  "exit": 1,
-  "tools": ["go test"],
-  "tests": { "passed": 41, "failed": 1, "skipped": 0 },
-  "errors": [ ],
-  "failures": [ { "kind": "fail", "title": "TestList", "test": "internal/files/files_test.go:TestList",
-                  "loc": "Location…", "body": ["files_test.go:31: got 2 files, want 3"] } ],
-  "warnings": [ ],
-  "log": "/home/ransom/.local/state/crux/logs/…"
-}
-```
-
-crux's existing `digest.Report` and `digest.Item` map onto this almost one to one. New: `loc.in` (the enclosing symbol) and `test` (the failing test's ref), see [evidence](evidence.md#crux-failures-and-symbols).
-
-**glint**: the listing (`items`), the project card, or the outline (`symbols`, a list of Symbol). glint's current `--json` prints a bare array; it moves into `result.items` in the same release that adopts the envelope (glint is pre-1.0, so this is allowed, but the release notes must say so).
+- **seek** (`report.Seek`): `pattern`, `target` (in ref mode), `definitions` (Symbols), `groups` (each: `path`, `symbol` containing the hits or `null`, `hits` with `line`, `col`, `text`, `label`, `writes`), `files` (with `-l`), `counts` over the whole search.
+- **recap** (`report.Recap`): `old` and `new` (the sides as named), `commit` (with `recap show`), `files` (each: `path`, `old_path`, `status`, `added`, `removed`, `changes` with `what`, `symbol`, `old_ref`, `old_sig`/`new_sig`, …; `outside` for lines outside definitions; `defs` of new and deleted files), `commits` (recap log, each with its files), `show` (with `--show`: each symbol's change and diff lines).
+- **crux** (`report.Crux`): `command`, `exit`, `duration_ms`, `tools`, `tests`, `errors`/`failures`/`warnings` (each: `kind`, `title`, `loc` with `in`, `test`, `body`, `count`, `locs`), `notes`, `tail`, `lines`, `log`. `loc.in` and `test` are the refs from [evidence](evidence.md#crux-failures-and-symbols).
+- **glint** (`report.Glint`): `items` for a listing (the entries glint's `--json` printed as a bare array before; their paths stay as listed, relative to the working directory like `ls`), or `file` for one file (`path`, `lines`, `size`, `symbols`). Moving the listing into the envelope breaks consumers of the old bare array; glint is pre-1.0, and its release notes say so.
 
 ## Budgets and limits in JSON
 
