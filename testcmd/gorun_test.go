@@ -15,7 +15,10 @@ import (
 // TestRerunGoSubtestsReal checks subtest reruns against go test itself:
 // the names it prints for failed subtests (with_space for "with space",
 // bad#01 for a second "bad", p/q for a name with a slash) give a -run
-// filter that runs those subtests and their parents, and no other.
+// filter that runs those subtests and their parents, and no other, also
+// for subtests of several tests at several depths. A test that failed on
+// its own reruns whole, as does each parent in a module for a go before
+// 1.18, which the caveat says.
 func TestRerunGoSubtestsReal(t *testing.T) {
 	if testing.Short() {
 		t.Skip("runs go test")
@@ -27,9 +30,7 @@ func TestRerunGoSubtestsReal(t *testing.T) {
 	if !ok {
 		t.Skip("a development go: no version for go.mod")
 	}
-	root := t.TempDir()
-	write(t, root, "go.mod", "module sub\n\ngo "+strings.Fields(v)[0]+"\n")
-	write(t, root, "sub_test.go", `package sub
+	const tests = `package sub
 
 import "testing"
 
@@ -53,51 +54,103 @@ func TestA(t *testing.T) {
 func TestB(t *testing.T) {
 	t.Run("ok", pass)
 	t.Run("bad", fail)
+	t.Run("a+", func(t *testing.T) { t.Run("in", fail) })
 }
-`)
-	argv := []string{"go", "test", "-count=1", "-v", "./..."}
-	_, failed := goRun(t, root, argv)
-	want := []string{"TestA/a+b(c)[1]|x.*", "TestA/bad", "TestA/bad#01", "TestA/outer/inner", "TestA/p/q", "TestA/with_space", "TestB/bad"}
-	if !slices.Equal(failed, want) {
-		t.Fatalf("go test printed failures %q, want %q", failed, want)
-	}
 
-	for _, c := range []struct {
-		printed []string
-		ran     []string // besides the printed ones
+func TestC(t *testing.T) {
+	t.Run("ok", pass)
+	t.Run("bad", fail)
+	t.Fail()
+}
+`
+	argv := []string{"go", "test", "-count=1", "-v", "./..."}
+	want := []string{"TestA/a+b(c)[1]|x.*", "TestA/bad", "TestA/bad#01", "TestA/outer/inner", "TestA/p/q", "TestA/with_space", "TestB/a+/in", "TestB/bad", "TestC/bad"}
+	allA := []string{"TestA", "TestA/ok", "TestA/bad", "TestA/bad#01", "TestA/with_space", "TestA/a+b(c)[1]|x.*", "TestA/p/q", "TestA/outer", "TestA/outer/inner", "TestA/outer/fine"}
+	for _, m := range []struct {
+		goVersion string
+		cases     []struct {
+			printed []string
+			ran     []string // besides the printed ones
+		}
 	}{
-		{[]string{"TestA/bad"}, []string{"TestA"}},
-		{[]string{"TestA/bad#01", "TestA/with_space", "TestA/a+b(c)[1]|x.*"}, []string{"TestA"}},
-		{[]string{"TestA/p/q"}, []string{"TestA"}},
-		{[]string{"TestA/outer/inner"}, []string{"TestA", "TestA/outer"}},
-		// the parent tests, and so their passing subtests
-		{[]string{"TestA/outer/inner", "TestB/bad"}, []string{"TestA", "TestB", "TestB/ok", "TestA/ok", "TestA/outer", "TestA/outer/fine",
-			"TestA/bad", "TestA/bad#01", "TestA/with_space", "TestA/a+b(c)[1]|x.*", "TestA/p/q"}},
+		{strings.Fields(v)[0], []struct {
+			printed []string
+			ran     []string
+		}{
+			{[]string{"TestA/bad"}, []string{"TestA"}},
+			{[]string{"TestA/bad#01", "TestA/with_space", "TestA/a+b(c)[1]|x.*"}, []string{"TestA"}},
+			{[]string{"TestA/p/q"}, []string{"TestA"}},
+			{[]string{"TestA/outer/inner"}, []string{"TestA", "TestA/outer"}},
+			// several parents and depths: alternatives
+			{[]string{"TestA/outer/inner", "TestB/bad"}, []string{"TestA", "TestA/outer", "TestB"}},
+			{[]string{"TestA/a+b(c)[1]|x.*", "TestA/outer/inner", "TestA/p/q", "TestB/bad"}, []string{"TestA", "TestA/outer", "TestB"}},
+			{[]string{"TestB/a+/in"}, []string{"TestB", "TestB/a+"}},
+			{want, []string{"TestA", "TestA/outer", "TestB", "TestB/a+", "TestC"}},
+			// failed on its own: the whole test
+			{[]string{"TestC", "TestC/bad", "TestB/bad"}, []string{"TestC/ok", "TestB"}},
+		}},
+		{"1.17", []struct {
+			printed []string
+			ran     []string
+		}{
+			{[]string{"TestA/bad", "TestA/with_space"}, []string{"TestA"}},
+			// several parents: the parent tests
+			{[]string{"TestA/outer/inner", "TestB/bad"}, append([]string{"TestB", "TestB/ok", "TestB/a+", "TestB/a+/in"}, allA...)},
+		}},
 	} {
-		var fs []Failed
-		for _, p := range c.printed {
-			top, _, _ := strings.Cut(p, "/")
-			fs = append(fs, Failed{Target: ref.Target{Path: "sub_test.go", Name: top, Kind: "func"}, Printed: p})
+		root := t.TempDir()
+		write(t, root, "go.mod", "module sub\n\ngo "+m.goVersion+"\n")
+		write(t, root, "sub_test.go", tests)
+		_, failed := goRun(t, root, argv)
+		if !slices.Equal(failed, want) {
+			t.Fatalf("go %s: go test printed failures %q, want %q", m.goVersion, failed, want)
 		}
-		cmd, ok := Rerun(root, root, argv, fs)
-		if !ok {
-			t.Errorf("%q: no rerun", c.printed)
-			continue
-		}
-		ran, failed := goRun(t, root, cmd.Args)
-		wantRan := append(slices.Clone(c.printed), c.ran...)
-		slices.Sort(wantRan)
-		wantFailed := slices.Sorted(slices.Values(c.printed))
-		if cmd.Caveat != "" {
-			wantFailed = want
-		}
-		if !slices.Equal(ran, wantRan) || !slices.Equal(failed, wantFailed) {
-			t.Errorf("%s\n ran %q\nwant %q\n failed %q\n  want %q", cmd, ran, wantRan, failed, wantFailed)
-		}
-		if cmd.Tests != len(c.printed) {
-			t.Errorf("%s: %d tests, want %d", cmd, cmd.Tests, len(c.printed))
+		for _, c := range m.cases {
+			var fs []Failed
+			for _, p := range c.printed {
+				top, _, _ := strings.Cut(p, "/")
+				fs = append(fs, Failed{Target: ref.Target{Path: "sub_test.go", Name: top, Kind: "func"}, Printed: p})
+			}
+			cmd, ok := Rerun(root, root, argv, fs)
+			if !ok {
+				t.Errorf("go %s, %q: no rerun", m.goVersion, c.printed)
+				continue
+			}
+			ran, failed := goRun(t, root, cmd.Args)
+			wantRan := slices.Compact(slices.Sorted(slices.Values(append(slices.Clone(c.printed), c.ran...))))
+			var wantFailed []string // what fails of what runs
+			for _, f := range want {
+				if slices.Contains(wantRan, f) {
+					wantFailed = append(wantFailed, f)
+				}
+			}
+			if !slices.Equal(ran, wantRan) || !slices.Equal(failed, wantFailed) {
+				t.Errorf("go %s: %s\n ran %q\nwant %q\n failed %q\n  want %q", m.goVersion, cmd, ran, wantRan, failed, wantFailed)
+			}
+			if cmd.Tests != len(c.printed) {
+				t.Errorf("%s: %d tests, want %d", cmd, cmd.Tests, len(c.printed))
+			}
+			exact := append(ancestors(c.printed), c.printed...)
+			wide := slices.ContainsFunc(ran, func(r string) bool { return !slices.Contains(exact, r) })
+			if wide != (cmd.Caveat != "") {
+				t.Errorf("%s: caveat %q, runs more than the failed tests and their parents: %v", cmd, cmd.Caveat, wide)
+			}
 		}
 	}
+}
+
+// ancestors lists the parents of go test names: TestA and TestA/outer for
+// TestA/outer/inner.
+func ancestors(names []string) []string {
+	var out []string
+	for _, n := range names {
+		for i := range len(n) {
+			if n[i] == '/' {
+				out = append(out, n[:i])
+			}
+		}
+	}
+	return out
 }
 
 var (

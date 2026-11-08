@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/Vaspyyy/prism/evidence"
+	"github.com/Vaspyyy/prism/outline"
 	"github.com/Vaspyyy/prism/ref"
 	"github.com/Vaspyyy/prism/report"
 )
@@ -105,7 +106,8 @@ func set(names ...string) map[string]bool {
 }
 
 // goRerun: go [-C dir] test <argv's flags> -run '^(A|B)$' <failed packages>
-// [-args …], or -run '^A$/^(x|y)$' for failed subtests (goRerunSelect).
+// [-args …], or -run '^A$/^(x|y)$|^B$/^z$' for failed subtests
+// (goRerunSelect).
 // Packages and -run are replaced, -bench and -benchtime dropped; argv's
 // packages only tell which module the run was in.
 func goRerun(root, cwd string, argv []string, failed []Failed) (Cmd, bool) {
@@ -202,7 +204,7 @@ func goRerun(root, cwd string, argv []string, failed []Failed) (Cmd, bool) {
 	if !within(mod, base) && up(root, base, "go.work", nil) == "" {
 		return Cmd{}, false
 	}
-	sel, ok := goRerunSelect(root, failed)
+	sel, ok := goRerunSelect(root, mod, failed)
 	if !ok {
 		return Cmd{}, false
 	}
@@ -213,19 +215,21 @@ func goRerun(root, cwd string, argv []string, failed []Failed) (Cmd, bool) {
 	return Cmd{Args: append(args, after...), Tests: sel.n, Caveat: sel.caveat}, true
 }
 
-// goRerunSelect is goSelect by the names go test printed: a failed subtest
-// is selected by its path, each level quoted (TestA/with_space, as go
-// prints "with space": -run '^TestA$/^with_space$'). -run matches a name
-// level by level, so subtests are selected exactly only when they are all
-// at one depth under one parent: '^TestA$/^outer$/^(a|b)$'. Otherwise
-// (subtests of several tests, at several depths, or a test failed on its
-// own as well as through a subtest) the parent tests are selected, and the
-// caveat says which also rerun their passing subtests. A printed name
-// that isn't the test's own, or a subtest of it, gives no selection.
-func goRerunSelect(root string, failed []Failed) (goSelection, bool) {
+// goRerunSelect is goSelect by the names go test printed, for a run in
+// module mod: a failed subtest is selected by its path, each level quoted
+// (TestA/with_space, as go prints "with space": -run
+// '^TestA$/^with_space$'). Subtests under one parent at one depth share a
+// group ('^TestA$/^outer$/^(a|b)$'), and groups are alternatives
+// ('^TestA$/^bad$|^TestB$/^x$/^y$'), which go test splits on since go
+// 1.18; for a module that allows an older go, the parent tests are
+// selected instead. A test that failed on its own as well as through a
+// subtest reruns whole. The caveat says which tests also rerun passing
+// subtests. A printed name that isn't the test's own, or a subtest of it,
+// gives no selection.
+func goRerunSelect(root, mod string, failed []Failed) (goSelection, bool) {
 	ts := make([]ref.Target, len(failed))
 	byDir := map[string]map[string]bool{} // package directory: printed names
-	var subs []string                     // distinct failed subtests
+	var paths []string                    // distinct printed names
 	for i, t := range failed {
 		ts[i] = t.Target
 		p := cmp.Or(t.Printed, t.Name)
@@ -237,8 +241,8 @@ func goRerunSelect(root string, failed []Failed) (goSelection, bool) {
 			byDir[d] = map[string]bool{}
 		}
 		byDir[d][p] = true
-		if p != t.Name && !slices.Contains(subs, p) {
-			subs = append(subs, p)
+		if !slices.Contains(paths, p) {
+			paths = append(paths, p)
 		}
 	}
 	sel := goSelect(root, ts)
@@ -246,66 +250,153 @@ func goRerunSelect(root string, failed []Failed) (goSelection, bool) {
 	for _, ps := range byDir {
 		sel.n += len(ps)
 	}
-	if len(subs) == 0 {
-		return sel, true
+	if !slices.ContainsFunc(paths, func(p string) bool { return strings.Contains(p, "/") }) {
+		return sel, true // tests only: goSelect's filter
 	}
-	slices.Sort(subs)
-	if re, ok := goSubtestRun(byDir, subs); ok {
-		sel.re = re
-		return sel, true
-	}
-	var parents []string
-	for _, s := range subs {
-		top, _, _ := strings.Cut(s, "/")
-		if !slices.Contains(parents, top) {
-			parents = append(parents, top)
+	slices.Sort(paths)
+	var alts, whole []string // what -run selects; tests that rerun whole
+	for _, p := range paths {
+		if i := slices.IndexFunc(alts, func(a string) bool { return strings.HasPrefix(p, a+"/") }); i >= 0 {
+			if !slices.Contains(whole, alts[i]) {
+				whole = append(whole, alts[i]) // failed on its own, and through p
+			}
+			continue
 		}
+		alts = append(alts, p)
 	}
-	caveat := "also reruns passing subtests of " + parents[len(parents)-1]
-	if len(parents) > 1 {
-		caveat = "also reruns passing subtests of " + strings.Join(parents[:len(parents)-1], ", ") + " and " + parents[len(parents)-1]
+	groups := goGroups(alts)
+	if len(groups) > 1 && !goAlternates(mod) {
+		var tops []string
+		for _, a := range alts {
+			top, _, sub := strings.Cut(a, "/")
+			if !slices.Contains(tops, top) {
+				tops = append(tops, top)
+			}
+			if sub && !slices.Contains(whole, top) {
+				whole = append(whole, top)
+			}
+		}
+		for i, w := range whole {
+			whole[i], _, _ = strings.Cut(w, "/")
+		}
+		slices.Sort(whole)
+		whole = slices.Compact(whole)
+		alts, groups = tops, [][]string{tops}
 	}
-	if sel.caveat != "" {
-		caveat += "; " + sel.caveat
+	var re []string
+	for _, g := range groups {
+		re = append(re, goGroupRun(g))
 	}
-	sel.caveat = caveat
+	sel.re = strings.Join(re, "|")
+	var caveats []string
+	if len(whole) > 0 {
+		caveats = append(caveats, "also reruns passing subtests of "+andList(whole))
+	}
+	if goSameName(sel.dirs, byDir, alts) {
+		caveats = append(caveats, "also runs tests of the same name in the other packages")
+	}
+	sel.caveat = strings.Join(caveats, "; ")
 	return sel, true
 }
 
-// goSubtestRun is the -run filter that selects exactly these subtests
-// (sorted) in every package: each package failed the same ones, every
-// failure is a subtest, and all are at one depth under one parent.
-func goSubtestRun(byDir map[string]map[string]bool, subs []string) (string, bool) {
-	for _, ps := range byDir {
-		if len(ps) != len(subs) {
-			return "", false // a test failed on its own, or other subtests did elsewhere
-		}
-		for _, s := range subs {
-			if !ps[s] {
-				return "", false
+// goGroups groups sorted names by their parent (all levels but the last),
+// in order.
+func goGroups(names []string) [][]string {
+	var groups [][]string
+	parent := func(n string) string {
+		i := strings.LastIndex(n, "/")
+		return n[:max(i, 0)]
+	}
+next:
+	for _, n := range names {
+		for i, g := range groups {
+			if parent(g[0]) == parent(n) && strings.Count(g[0], "/") == strings.Count(n, "/") {
+				groups[i] = append(g, n)
+				continue next
 			}
 		}
+		groups = append(groups, []string{n})
 	}
-	first := strings.Split(subs[0], "/")
-	parent := first[:len(first)-1]
-	var last []string
-	for _, s := range subs {
-		levels := strings.Split(s, "/")
-		if !slices.Equal(levels[:len(levels)-1], parent) {
-			return "", false
-		}
-		last = append(last, regexp.QuoteMeta(levels[len(levels)-1]))
-	}
+	return groups
+}
+
+// goGroupRun is the -run filter for one group, each level quoted:
+// ^TestA$/^outer$/^(a|b)$.
+func goGroupRun(g []string) string {
+	levels := strings.Split(g[0], "/")
 	var re []string
-	for _, l := range parent {
+	for _, l := range levels[:len(levels)-1] {
 		re = append(re, "^"+regexp.QuoteMeta(l)+"$")
+	}
+	var last []string
+	for _, n := range g {
+		last = append(last, regexp.QuoteMeta(n[strings.LastIndex(n, "/")+1:]))
 	}
 	if len(last) == 1 {
 		re = append(re, "^"+last[0]+"$")
 	} else {
 		re = append(re, "^("+strings.Join(last, "|")+")$")
 	}
-	return strings.Join(re, "/"), true
+	return strings.Join(re, "/")
+}
+
+// goAlternates reports whether the module in dir requires a go whose test
+// -run splits on |: go 1.18 or later, by its go.mod's go line.
+func goAlternates(dir string) bool {
+	data, ok := outline.Read(filepath.Join(dir, "go.mod"))
+	if !ok {
+		return false
+	}
+	for _, l := range strings.Split(string(data), "\n") {
+		l, _, _ = strings.Cut(l, "//")
+		if f := strings.Fields(l); len(f) == 2 && f[0] == "go" {
+			minor, ok := strings.CutPrefix(f[1], "1.")
+			if !ok {
+				return false
+			}
+			n := 0
+			for _, c := range minor {
+				if c < '0' || c > '9' {
+					break
+				}
+				n = n*10 + int(c-'0')
+			}
+			return n >= 18
+		}
+	}
+	return false // no go line: go 1.16
+}
+
+// goSameName reports whether -run, which applies to every listed package,
+// selects in one of several packages a test of the same name as one that
+// failed only in another: one of the package's tests where nothing in the
+// selected test, or around it, failed.
+func goSameName(dirs []string, byDir map[string]map[string]bool, alts []string) bool {
+	if len(dirs) < 2 {
+		return false
+	}
+	for _, d := range dirs {
+		tests := goTests(d)
+		for _, a := range alts {
+			top, _, _ := strings.Cut(a, "/")
+			related := false
+			for p := range byDir[d] {
+				related = related || p == a || strings.HasPrefix(p, a+"/") || strings.HasPrefix(a, p+"/")
+			}
+			if slices.Contains(tests, top) && !related {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// andList is "a", "a and b", "a, b and c".
+func andList(s []string) string {
+	if len(s) == 1 {
+		return s[0]
+	}
+	return strings.Join(s[:len(s)-1], ", ") + " and " + s[len(s)-1]
 }
 
 // pytest options by what a rerun does with them; an option missing here
