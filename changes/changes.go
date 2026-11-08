@@ -258,9 +258,9 @@ func fileSymbols(root, f string, hunksU, hunksB [][2]int) []Symbol {
 	if !outline.Supported(f) {
 		return nil
 	}
-	data, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(f)))
-	if err != nil {
-		return nil // deleted in the working tree
+	data, ok := outline.Read(filepath.Join(root, filepath.FromSlash(f)))
+	if !ok {
+		return nil // deleted in the working tree, a symlink, or too big
 	}
 	ts := ref.Targets(f, outline.Parse(f, data, outline.MaxSize))
 	refs := ref.Refs(ts)

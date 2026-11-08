@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Vaspyyy/prism/repo"
 )
@@ -257,5 +258,26 @@ func TestOptions(t *testing.T) {
 	want := []string{"README.md:Usage branch", "shop/new.go:New changed", "shop/shop.go:Repo.Open changed"}
 	if got := refs(with(Options{})); !reflect.DeepEqual(got, want) {
 		t.Errorf("all: %q, want %q", got, want)
+	}
+}
+
+func TestSymlinkNotRead(t *testing.T) {
+	dir := newRepo(t)
+	// an untracked symlink to an endless device, and one to a file outside
+	if err := os.Symlink("/dev/zero", filepath.Join(dir, "zero.go")); err != nil {
+		t.Skip("no symlinks:", err)
+	}
+	outside := filepath.Join(t.TempDir(), "secret.go")
+	os.WriteFile(outside, []byte("package secret\n\nfunc Secret() {}\n"), 0o644)
+	os.Symlink(outside, filepath.Join(dir, "secret.go"))
+	done := make(chan *Set)
+	go func() { done <- compute(t, dir) }()
+	select {
+	case s := <-done:
+		if len(s.Symbols) != 0 || !s.Changed("zero.go") || !s.Changed("secret.go") {
+			t.Errorf("symlinks: files %q, symbols %q", s.Files, refs(s))
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Compute hangs on a symlink to /dev/zero")
 	}
 }

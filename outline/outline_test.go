@@ -2,6 +2,8 @@ package outline
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -234,5 +236,27 @@ func TestNestedImplsAndReturnedFunctions(t *testing.T) {
 	js := "function make(world) {\n\treturn function update(i) {\n\t\treturn i;\n\t};\n}\n"
 	if got := spans("a.js", js); got != "function make 1-5; function make.update 2-4" {
 		t.Errorf("js: got %s", got)
+	}
+}
+
+func TestRead(t *testing.T) {
+	dir := t.TempDir()
+	good := filepath.Join(dir, "a.go")
+	os.WriteFile(good, []byte("package a\n"), 0o644)
+	if data, ok := Read(good); !ok || string(data) != "package a\n" {
+		t.Errorf("regular file: %q, %v", data, ok)
+	}
+	big := filepath.Join(dir, "big.go")
+	f, _ := os.Create(big)
+	f.Truncate(MaxSize + 1)
+	f.Close()
+	link := filepath.Join(dir, "link.go")
+	os.Symlink(good, link)
+	zero := filepath.Join(dir, "zero.go")
+	os.Symlink("/dev/zero", zero)
+	for _, p := range []string{big, link, zero, dir, filepath.Join(dir, "missing.go")} {
+		if data, ok := Read(p); ok || data != nil {
+			t.Errorf("Read(%s) = %d bytes, %v; want refused", filepath.Base(p), len(data), ok)
+		}
 	}
 }

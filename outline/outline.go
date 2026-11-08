@@ -8,6 +8,8 @@ package outline
 import (
 	"bufio"
 	"bytes"
+	"io"
+	"os"
 	"path/filepath"
 	"regexp"
 	"regexp/syntax"
@@ -203,6 +205,33 @@ func Supported(name string) bool { return langOf(name) != nil }
 
 // MaxSize is the largest file Parse looks at.
 const MaxSize = 4 << 20
+
+// Read reads a file for Parse: a regular file of at most MaxSize bytes. A
+// symlink, device, pipe or bigger file gives ok false and isn't read, so a
+// working-tree path that is now a symlink to /dev/zero or to a file outside
+// the repository can't hang a tool or leak into its output. (git stores a
+// symlink as its target's path, so its outline would be the wrong file's
+// anyway.)
+func Read(path string) (data []byte, ok bool) {
+	if st, err := os.Lstat(path); err != nil || !st.Mode().IsRegular() || st.Size() > MaxSize {
+		return nil, false
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, false
+	}
+	defer f.Close()
+	// the path may have been swapped for a symlink since Lstat: what was
+	// opened must be a regular file too, and reading stops at the limit
+	if st, err := f.Stat(); err != nil || !st.Mode().IsRegular() {
+		return nil, false
+	}
+	data, err = io.ReadAll(io.LimitReader(f, MaxSize+1))
+	if err != nil || len(data) > MaxSize {
+		return nil, false
+	}
+	return data, true
+}
 
 // Parse returns the symbols of a file's contents (at most limit), with
 // their ends and parents. name only selects the language.

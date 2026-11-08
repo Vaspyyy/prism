@@ -21,6 +21,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Vaspyyy/prism/outline"
 	"github.com/Vaspyyy/prism/repo"
 )
 
@@ -241,8 +242,8 @@ func (s *Store) read(kind string, v any, m *Meta) bool {
 		return false
 	}
 	now := s.now()
-	data, err := os.ReadFile(p)
-	if err != nil || json.Unmarshal(data, v) != nil || now.Sub(st.ModTime()) > TTL || m.Branch != s.branch || m.Session != s.session {
+	data, ok := outline.Read(p) // a regular file of sane size, never a planted symlink
+	if !ok || json.Unmarshal(data, v) != nil || now.Sub(st.ModTime()) > TTL || m.Branch != s.branch || m.Session != s.session {
 		os.Remove(p)
 		return false
 	}
