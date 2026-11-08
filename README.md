@@ -42,6 +42,8 @@ crux  ──┘
 
 `cmd/prism` comes after v1 (see [roadmap](docs/roadmap.md)).
 
+A change to outline's rules shows up as a diff of `outline/testdata/corpus.golden`, every symbol it finds in a file of each language it supports; `go test ./outline -update` rewrites it.
+
 ## Where the tools started
 
 Before Prism, checked 2026-11-08 against glint 0.6.1, seek 0.1.0, recap 0.1.0, crux 0.3.1. Kept as the record of what v1 set out to fix.
