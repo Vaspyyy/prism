@@ -71,9 +71,11 @@ seek's `next:` line can offer the crux command that runs the tests mentioning a 
 
 | Ecosystem | Command | Precision |
 | --- | --- | --- |
-| Go | `go test -run '^(TestA\|TestB)$' ./pkg/dir/` | exact |
+| Go | `go test -run '^(TestA\|TestB)$' ./pkg/dir/` | exact for one package. `-run` applies to every listed package, so with several, a test of the same name in another listed package runs too: checked, and the reason line says so |
 | Python (pytest) | `pytest path/test_x.py::test_a path/test_x.py::TestB::test_c` | exact |
-| Rust (cargo) | `cargo test name` | substring: may run extra tests with similar names; the reason line says so |
+| Rust (cargo) | `cargo test -- --exact mod::tests::name`, with `--test x` for an integration test target | exact within a target. A crate with both `src/lib.rs` and `src/main.rs` can have the same test path in both, and the reason line says so |
+
+Paths are relative to the directory the tool ran in, so the command runs as printed. A Go module or Cargo package elsewhere in the repo gets `go -C <dir>` or `--manifest-path <dir>/Cargo.toml`. What counts as a test: Go `TestXxx`, `FuzzXxx` and `ExampleXxx` functions in `_test.go` files; pytest's default discovery (`test_*` functions and methods in `Test*` classes, in `test_*.py` or `*_test.py`); Rust functions marked `#[test]` or `#[<crate>::test]`.
 
 Other ecosystems: no suggestion until a precise command is known. A wrong suggestion is worse than none.
 

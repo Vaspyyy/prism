@@ -61,7 +61,7 @@ The shape is defined in Go in [`prism/report`](../report): the envelope and shar
 | `tool`, `version` | which tool and release produced it |
 | `args` | the arguments after the tool name, as given |
 | `repo` | from `prism/repo`. Always present: outside git, `git` is false and `root` is the working directory, so paths can always be made absolute |
-| `context` | what context the run used (`applied`: any of `rank`, `mark`, `fill`); `null` until the tools use context ([context](context.md)) |
+| `context` | what context the run had and what it did with it, below; `null` with `--no-context` ([context](context.md)) |
 | `result` | the tool's result, below; left out when `error` is set |
 | `error` | why the run failed, instead of `result` |
 | `links` | relations between symbols, each with a basis (see [evidence](evidence.md)) |
@@ -71,6 +71,20 @@ The shape is defined in Go in [`prism/report`](../report): the envelope and shar
 All names are `snake_case`. Lines are 1-based, ends inclusive. Paths are repo-relative like in text output; `repo.root` makes them absolute. Lists that can be empty are always present (`[]`); optional values are left out when they don't apply. Times are RFC 3339 with the offset.
 
 Fields named `ref`, `in`, `test`, `target`, `from`, `to` and `old_ref` always hold refs, and no other field does, so a program can find every ref without knowing each tool's result.
+
+### `context`
+
+```json
+"context": {
+  "applied": ["rank", "mark"],
+  "changed": { "base": "HEAD", "branch_base": "6e1c2d0…", "files": 3, "uncommitted": 2, "branch": 5 },
+  "focus": { "range": "b681ef1", "old": "1f0e…", "new": "b681ef1c…", "symbols": 4, "by": "recap", "at": "2026-11-08T14:02:11+01:00" },
+  "last_run": { "cmd": "go test ./...", "exit": 1, "failing": 2, "by": "crux", "at": "2026-11-08T14:05:40+01:00" },
+  "notes": ["nothing matches in the working tree; showing focus commit b681ef1"]
+}
+```
+
+`applied` is always there (empty when context was available but changed nothing). `changed` is there in a git repo for tools that read changes, `focus` and `last_run` when the tool reads them and a live record exists. `changed.skipped` says why symbol detail was skipped (`"812 changed files"`). `notes` are the sentences the `context:` line adds beyond the layers. Counts, not lists: the marks on the result's own symbols say which ones context touched.
 
 ## Shared objects
 
