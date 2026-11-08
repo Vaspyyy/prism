@@ -4,7 +4,7 @@ The shared layer that lets **glint**, **crux**, **seek** and **recap** build on 
 
 Prism is not a fifth tool that wraps the other four. It is a small Go library that all four import, plus (later) a thin `prism` command for the few things no single tool should own. The goal: after `recap` shows a commit, an agent can take a changed function straight to `seek` (definition and callers) and on to `crux` (the tests that mention it) without retyping a path or a symbol, and every step says honestly what it knows.
 
-Status (2026-11-08): Phases 0, 1 and 2 of the [roadmap](docs/roadmap.md) are done. glint 0.8.0, seek 0.3.0, recap 0.3.0 and crux 0.5.0 print and accept refs and have `--json` in the shared `prism/1` format; `e2e/` checks on every PR that refs from one tool (text and JSON) are accepted by the others. Next: Phase 3, context and evidence.
+Status (2026-11-08): v1 is done: phases 0 to 3 of the [roadmap](docs/roadmap.md). glint 0.9.0, seek 0.4.0, recap 0.4.0 and crux 0.6.0 print and accept the same refs, have `--json` in the shared `prism/1` format, and share context: recap's focus, crux's last run and the current changes show up as marks in every tool, each report says what context changed, and `next:` lines chain the tools without retyping a path or a symbol. `e2e/` runs the v1 acceptance test on every PR. Next: the items under "After v1" and "Found along the way" in the roadmap.
 
 ```sh
 go get github.com/Vaspyyy/prism
@@ -42,9 +42,9 @@ crux  ──┘
 
 `cmd/prism` comes after v1 (see [roadmap](docs/roadmap.md)).
 
-## Where the tools stand today
+## Where the tools started
 
-Checked 2026-11-08 against glint 0.6.1, seek 0.1.0, recap 0.1.0, crux 0.3.1.
+Before Prism, checked 2026-11-08 against glint 0.6.1, seek 0.1.0, recap 0.1.0, crux 0.3.1. Kept as the record of what v1 set out to fix.
 
 | | glint | seek | recap | crux |
 | --- | --- | --- | --- | --- |

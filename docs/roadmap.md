@@ -45,7 +45,7 @@ Done when: the cross-tool test passes (every ref printed by any tool in the acce
 
 Done when: every tool's JSON for the acceptance scenario validates against the golden shapes, and refs inside it round-trip.
 
-## Phase 3: context and evidence
+## Phase 3: context and evidence (done 2026-11-08)
 
 - `prism/changes`: uncommitted and branch changes as symbols, with the 200-file and ~50 ms limits.
 - `prism/focus`: focus and last run, per worktree and session, atomic, expiring.
@@ -58,22 +58,22 @@ Done when: the acceptance test below passes.
 
 ## v1 acceptance test
 
-An automated end-to-end test in this repo. It builds a fixture Go module in a temp dir (a function `List`, a caller `run`, a test `TestList` that mentions `List`, and a commit that changes `List`), then runs the real binaries with `-A`. Each step's command is taken from the previous step's `next:` lines, never typed by the test.
+`TestAcceptance` in `e2e/acceptance_test.go`, run in CI against all four tools built from this checkout. It builds a fixture Go module in a temp dir (a doc-commented function `List`, a caller `run`, a test `TestList` that calls `List`, and a commit that changes `List` and breaks `TestList`), then runs the real binaries in one agent session. Each step's command is taken from the previous step's `next:` lines, never typed by the test.
 
 1. `recap show <commit>`
-   - lists `internal/files/files.go:List` as changed
+   - lists `internal/files/files.go:List` as changed, and records the commit as focus
    - `next:` includes `seek internal/files/files.go:List`
 2. the seek suggestion
-   - shows `List`'s definition (`73-…`, not including the doc comment), marked `[focus]`
-   - shows the hit in `run` and the hit in `TestList`, the test labelled "mentions"
+   - shows `List`'s definition from its `func` line (not the doc comment), marked `[focus]`, under a `context:` line
+   - shows the hit in `run` and the hit in `TestList`, the test labelled "mentions List"
    - `next:` includes `crux go test -run '^TestList$' ./internal/files/` with the reason "runs the 1 test that mentions List"
-3. the crux suggestion (with `List` broken on purpose in a second variant of the fixture)
-   - reports the failure with `in internal/files/files_test.go:TestList`
-   - never uses the word "covers" anywhere
+3. the crux suggestion
+   - reports the failure with `in internal/files/files_test.go:TestList`, and records the run
+   - no output anywhere says "covers", "covered" or "coverage"
 4. every command again with `--json`
-   - all documents parse, every ref in them resolves in every tool that takes symbols
-5. the whole run again with `--no-context`
-   - same results, minus marks, `context:` lines and fill-ins (proves rule 2: context never hides)
+   - all documents are valid envelopes with `context`, their links pass `evidence.CheckAll`, their `next` items are the text run's, and every symbol ref in them is accepted by seek
+5. the whole run again with `--no-context` added to every command
+   - the same reports minus marks and the `context:` line, and no `next:` line that context-on didn't print (context may add suggestions, never remove one; proves rule 2: context never hides)
 
 ## Per-tool change list
 
@@ -103,6 +103,10 @@ Things the work so far turned up that belong to a later step:
 - **glint** had a data race in directory listing that CI's race detector caught (fixed in glint#5).
 - **changes vs seek**: seek leaves out definitions that outline finds inside docstrings and template strings; `prism/changes` keeps them. Ordinals (`#N`) can then differ between the two and a mark is missed. Rare; the fix is one shared filter in outline.
 - **crux** has no "rerun only the failed tests" suggestion: `testcmd` would drop the original command's flags (`-tags`, `-race`). It needs a way to carry them over.
+- **crux** mention suggestions can still match a function name shared across packages (two `New`s) on text alone; ruling that out needs a repo-wide index.
+- **recap** hangs when the working tree has a symlink to a FIFO or device, already in 0.3.0: its diff reads working-tree files directly (`collect` in main.go, `gitx.Content`). It should read a symlink as git stores it (the target's path) and skip non-regular files, like `outline.Read`.
+- **glint** doesn't mark repositories nested inside a non-git folder it lists (`glint -A ~/Projekte`): Prism's change detection per repo would add about 140 ms for 52 repos. Cheaper ways: load scoped, files-only context for the few projects the map opens up, or let Prism reuse the `git status` glint already ran.
+- **v0.6.3** of Prism was tagged on the wrong commit (the same code as v0.6.2) and is retracted in go.mod; v0.6.4 is that release.
 
 ## Decisions taken
 
