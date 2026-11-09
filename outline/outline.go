@@ -123,6 +123,10 @@ const (
 type lang struct {
 	rules []rule
 	style style
+	// a block opens on the line its header ends on, as gofmt and Kotlin's
+	// style have it, so a declaration that ends its line without one has
+	// none (headerGoesOn has the exceptions)
+	sameLine bool
 }
 
 var (
@@ -132,8 +136,8 @@ var (
 	})
 	rustRules = prepare([]rule{
 		r("", `^\s*(?:pub(?:\([^)]*\))? )?(?:async )?(?:unsafe )?(?:const )?(fn|struct|enum|trait|mod|type|union|static|macro_rules!) (\w+)`),
-		// also impls nested in mod tests or a function; tuple types in the generics
-		r("impl", `^\s*impl(?:<[^>]*>)? ([\w:<>, '&()\[\]]+?)(?: \{|$| where)`),
+		// also impls nested in mod tests or a function; tuple and array types in the generics
+		r("impl", `^\s*impl(?:<[^>]*>)? ([\w:<>, '&()\[\];]+?)(?: \{|$| where)`),
 	})
 	pyRules = prepare([]rule{
 		r("", `^\s*(?:async )?(def|class) ([\p{L}_][\p{L}\p{N}_]*)`), // also nested helpers and classes
@@ -175,12 +179,13 @@ var (
 )
 
 var (
-	goLang   = lang{rules: goRules}
+	goLang   = lang{rules: goRules, sameLine: true}
 	rustLang = lang{rules: rustRules}
 	pyLang   = lang{rules: pyRules, style: indent}
 	jsLang   = lang{rules: jsRules}
 	cLang    = lang{rules: cRules}
 	javaLang = lang{rules: javaRules}
+	ktLang   = lang{rules: javaRules, sameLine: true}
 	gdLang   = lang{rules: gdRules, style: indent}
 	shLang   = lang{rules: shRules}
 	luaLang  = lang{rules: luaRules, style: keyword}
@@ -193,7 +198,7 @@ var langByExt = map[string]*lang{
 	"js": &jsLang, "mjs": &jsLang, "cjs": &jsLang, "ts": &jsLang, "tsx": &jsLang, "jsx": &jsLang, "mts": &jsLang,
 	"svelte": &jsLang, "vue": &jsLang,
 	"c": &cLang, "h": &cLang, "cc": &cLang, "cpp": &cLang, "cxx": &cLang, "hpp": &cLang, "hh": &cLang,
-	"java": &javaLang, "kt": &javaLang, "kts": &javaLang, "cs": &javaLang, "scala": &javaLang,
+	"java": &javaLang, "kt": &ktLang, "kts": &ktLang, "cs": &javaLang, "scala": &javaLang,
 	"gd": &gdLang, "sh": &shLang, "bash": &shLang, "zsh": &shLang,
 	"lua": &luaLang, "rb": &rbLang, "md": &mdLang, "markdown": &mdLang,
 }
@@ -327,16 +332,37 @@ func parse(name string, data []byte, limit int, keepText bool) []Symbol {
 			if i := strings.IndexByte(sig, '{'); i > 0 && !md {
 				sig = strings.TrimSpace(sig[:i]) // signature only, not a one-line body
 			}
-			if r := []rune(sig); len(r) > 110 {
-				sig = string(r[:109]) + "…"
-			}
-			out = append(out, Symbol{Line: i + 1, End: i + 1, Kind: kind, Name: strings.TrimSpace(name), Sig: sig, Parent: -1})
+			out = append(out, Symbol{Line: i + 1, End: i + 1, Kind: kind, Name: strings.TrimSpace(name), Sig: clip(sig), Parent: -1})
 			break
 		}
 	}
 	findEnds(lg, src, text, out)
 	findParents(out)
 	return out
+}
+
+// clip shortens a signature to at most 110 characters.
+func clip(sig string) string {
+	if r := []rune(sig); len(r) > 110 {
+		return string(r[:109]) + "…"
+	}
+	return sig
+}
+
+// sigBefore is line n up to byte body, where the definition's block opens,
+// made a signature as parse makes one: without comments, trimmed, clipped.
+// It is for a line with a { before the block's (func f() interface{} {),
+// where parse stopped at the first.
+func sigBefore(src *source, n, body int) string {
+	lx := newLexer(src)
+	lx.scan(n)
+	var b strings.Builder
+	for _, sg := range lx.segs {
+		if sg.kind != comment && sg.from < body {
+			b.WriteString(src.lines[n][sg.from:min(sg.to, body)])
+		}
+	}
+	return clip(strings.TrimSpace(b.String()))
 }
 
 // stripComments returns the line without its comments, keeping strings
@@ -393,7 +419,11 @@ func findEnds(lg *lang, src *source, text []bool, syms []Symbol) {
 			if k+1 < len(syms) {
 				limit = syms[k+1].Line - 1
 			}
-			s.End = braceEnd(src, s.Line-1, limit, s.Kind == "define")
+			var body int
+			s.End, body = braceEnd(src, s.Line-1, limit, s.Kind == "define", lg.sameLine)
+			if body > 0 && strings.IndexByte(lines[s.Line-1][:body], '{') >= 0 {
+				s.Sig = sigBefore(src, s.Line-1, body)
+			}
 		case indent, keyword:
 			s.End = indentEnd(lines, text, s.Line-1, lg.style == keyword)
 		case headings:
@@ -414,16 +444,19 @@ func findEnds(lg *lang, src *source, text []bool, syms []Symbol) {
 // braceEnd returns the 1-based line of the brace that closes the block
 // opened on or after line start (0-based). A declaration without a block
 // (`type ID int`, `fn f();`) ends on its own line, and one whose value is
-// an expression with a string in it (const f = () => `…`) where that
-// expression ends.
-func braceEnd(src *source, start, limit int, define bool) int {
+// an expression (fun f() = x, const f = () => `…`) where that expression
+// ends. With sameLine, the block opens on the line its header ends on.
+// body is where the block's { is on the definition's own line, or -1 when
+// it isn't there.
+func braceEnd(src *source, start, limit int, define, sameLine bool) (end, body int) {
 	lines := src.lines
+	body = -1
 	if define { // #define with continuation lines
 		j := start
 		for j+1 < len(lines) && strings.HasSuffix(strings.TrimRight(lines[j], " \t"), "\\") {
 			j++
 		}
-		return j + 1
+		return j + 1, body
 	}
 	lx := newLexer(src) // the definition's line starts in code
 	depth, opened, parens := 0, false, 0
@@ -434,6 +467,7 @@ func braceEnd(src *source, start, limit int, define bool) int {
 	// where that expression does, at a ; or at a line that the next doesn't
 	// continue, with its brackets closed.
 	value, strBody, nest, brackets := false, false, 0, 0
+	wrap := 0                // the ( open around the value, which aren't parameters: = ((a) => {
 	atValue := func() bool { // right after = or =>
 		return last == '=' && !strings.ContainsRune("=!<>", rune(prev)) || last == '>' && prev == '='
 	}
@@ -442,9 +476,9 @@ func braceEnd(src *source, start, limit int, define bool) int {
 			switch {
 			case strBody && nest > 0: // definitions in the value's brackets ({ f: function() {…} })
 			case strBody:
-				return j // the line before the next definition
+				return j, body // the line before the next definition
 			default:
-				return start + 1
+				return start + 1, body
 			}
 		}
 		if src.endBudget -= len(lines[j]) + 1; src.endBudget < 0 {
@@ -454,7 +488,7 @@ func braceEnd(src *source, start, limit int, define bool) int {
 		line := lines[j]
 		gap := true                          // a blank (or a new line) since last
 		lineEnd, endPrev := byte(0), byte(0) // how the line ends: its last code byte ('"' for a string), the one before
-		for _, sg := range lx.segs {
+		for si, sg := range lx.segs {
 			if sg.kind == str {
 				lineEnd, endPrev = '"', 0
 				top := !opened && parens == 0 && angle == 0 && inStmt
@@ -468,16 +502,36 @@ func braceEnd(src *source, start, limit int, define bool) int {
 			}
 			for k := sg.from; k < sg.to; k++ {
 				c := line[k]
+				if opened { // in a block, or after one, only braces count
+					switch c {
+					case '{':
+						if depth == 0 && j == start {
+							body = k
+						}
+						depth++
+					case '}':
+						if depth--; depth == 0 {
+							if blockFollows(line, lx.segs, si, k+1, value) {
+								continue // it wasn't the body: func f() interface{} {
+							}
+							return j + 1, body
+						}
+					}
+					continue
+				}
 				blank := c == ' ' || c == '\t'
 				if !blank {
 					lineEnd, endPrev = c, lineEnd
 				}
 				if strBody && c == '{' && nest <= 0 && (last == '>' && prev == '=' || !strings.ContainsRune("?:,([=|&!+-*/%^~<>", rune(last))) {
-					strBody = false // a block after all: the string was in a type (f = (a): T["k"] => {)
+					strBody, brackets = false, 0 // a block after all: the string was in a type (f = (a): T["k"] => {)
 				}
 				if !blank && c != '=' && c != '>' && !opened && parens == 0 && angle == 0 && inStmt && atValue() {
 					value = true
 				}
+				// a ( around an arrow function's object (=> ({ a: 1 })) or around
+				// the whole function (= ((a) => {): what's in it is the value
+				wraps := c == '(' && !opened && parens == 0 && !strBody && wrapsValue(line[k+1:], last, prev)
 				switch {
 				case blank:
 					gap = true
@@ -494,7 +548,7 @@ func braceEnd(src *source, start, limit int, define bool) int {
 						nest--
 					case ';':
 						if nest <= 0 {
-							return j + 1
+							return j + 1, body
 						}
 					}
 					continue
@@ -512,52 +566,188 @@ func braceEnd(src *source, start, limit int, define bool) int {
 						brackets++
 					case c == ']':
 						brackets--
+					case brackets > 0 && (c == '{' || c == '}' || c == ';'):
+						// in a type's brackets, not the body or the end:
+						// fn f() -> [u8; 4] {, func f[T interface{ M() }]() {
+						continue
 					}
 				}
 				switch c {
 				case '(':
-					if !opened {
+					if wraps {
+						wrap++
+					} else {
 						parens++
 					}
 				case ')':
-					if !opened {
+					if parens == 0 && wrap > 0 {
+						wrap--
+					} else {
 						parens--
 					}
 				case '{':
+					if depth == 0 && j == start {
+						body = k
+					}
 					depth++
 					opened = true
 				case '}':
 					depth--
-					if opened && depth == 0 {
-						return j + 1
-					}
 				case ';':
-					if !opened && depth == 0 {
-						return j + 1
+					if depth == 0 {
+						return j + 1, body
 					}
 				}
 			}
 		}
-		goesOn := strings.IndexByte(continuesAfter, lineEnd) >= 0 && (lineEnd != '>' || endPrev == '=') // a > ends a type, => goes on
+		goesOn := strings.IndexByte(continuesAfter, lineEnd) >= 0 && (lineEnd != '>' || endPrev == '=') && // a > ends a type, => goes on
+			!((lineEnd == '+' || lineEnd == '-') && endPrev == lineEnd) // and so does i++
 		ends := !lx.inText() && !goesOn && !nextContinues(lines, j)
 		if strBody {
 			if ends && nest <= 0 && lineEnd != 0 { // a line of only a comment doesn't end it
-				return j + 1
+				return j + 1, body
 			}
 			continue
+		}
+		if ends && !opened && parens <= 0 && brackets <= 0 && wrap <= 0 && lineEnd != 0 && (value || sameLine) && !headerGoesOn(lines, j) {
+			// the expression ended without a block (fun f() = x), or the
+			// header did (type ID int): a block further down isn't its
+			return j + 1, body
 		}
 		if ends && !opened && parens <= 0 && angle <= 0 {
 			inStmt = false // the statement ended without a value: a later = isn't its
 		}
 		if !opened && j-start > 30 {
-			return start + 1
+			return start + 1, body
 		}
 	}
 	if opened || strBody {
-		return len(lines)
+		return len(lines), body
 	}
-	return start + 1
+	return start + 1, body
 }
+
+// blockFollows reports whether the rest of a line, after a {…} that closed
+// at byte k-1 of its part si, opens another block of the same definition.
+// Then the one that closed wasn't the body: it was in a type
+// (func f() interface{} {, (): { ok: boolean } => {, -> Vec<{ N }> {) or
+// in an expression (= try { … } catch (e: E) {). The block isn't the
+// definition's when a statement ends before it (;), when two names follow
+// each other outside brackets, as a keyword and a name do where another
+// definition starts (} function next() {; the words in goesOnWith aside),
+// or at an = once the definition has its value: the next declarator
+// (}, g = () => {).
+func blockFollows(line string, segs []seg, si, k int, value bool) bool {
+	word := -1     // where the name the scan is in started, or -1
+	named := false // a name ended, and only blanks since
+	nest := 0      // the ( and [ open since the block closed: (x T) are parameters
+	var before byte
+	for ; si < len(segs); si, k = si+1, -1 {
+		sg := segs[si]
+		if sg.kind == comment {
+			continue
+		}
+		if sg.kind != code {
+			word, named, before = -1, false, '"'
+			continue
+		}
+		for i := max(k, sg.from); i < sg.to; i++ {
+			c := line[i]
+			switch {
+			case c == '{':
+				return true
+			case c == ';':
+				return false
+			case c == ' ' || c == '\t':
+				if word >= 0 {
+					named = nest <= 0 && !goesOnWith[line[word:i]]
+				}
+				word = -1
+			case isIdent(c) || c >= 0x80:
+				if named {
+					return false
+				}
+				if word < 0 {
+					word = i
+				}
+			default:
+				switch c {
+				case '(', '[':
+					nest++
+				case ')', ']':
+					nest--
+				case '=':
+					lone := !strings.ContainsRune("=!<>", rune(before)) && (i+1 >= sg.to || line[i+1] != '=' && line[i+1] != '>')
+					if lone && value && nest <= 0 {
+						return false
+					}
+				}
+				word, named = -1, false
+			}
+			before = c
+		}
+		word = -1 // a name doesn't go on in the next part
+	}
+	return false
+}
+
+// wrapsValue reports whether a ( that follows last and prev (see braceEnd)
+// and comes before rest is around a value, so that a { in it can be the
+// body: around the object an arrow function returns (=> ({ a: 1 }), but
+// not the parameters of a second one, => ({ a }) => a), or around a whole
+// arrow function (= ((a) => {, set: ((v) => {).
+func wrapsValue(rest string, last, prev byte) bool {
+	rest = strings.TrimLeft(rest, " \t")
+	switch {
+	case rest == "":
+		return false
+	case last == '>' && prev == '=':
+		if rest[0] != '{' {
+			return false
+		}
+		depth := 1 // the ( itself
+		for i := 0; i < len(rest); i++ {
+			switch rest[i] {
+			case '(', '[', '{':
+				depth++
+			case ')', ']', '}':
+				if depth--; depth == 0 {
+					return !strings.Contains(rest[i:], "=>")
+				}
+			}
+		}
+		return true
+	case last == ':' || last == '=' && !strings.ContainsRune("=!<>", rune(prev)):
+		return rest[0] == '('
+	}
+	return false
+}
+
+// headerGoesOn reports whether the next line of code goes on with the
+// definition although line j ended like a statement: with its block, on a
+// line of its own ({), its value (= x), or more of its header (where T : X,
+// private constructor(…), also after its annotations).
+func headerGoesOn(lines []string, j int) bool {
+	for k := j + 1; k < len(lines) && k <= j+10; k++ {
+		t := strings.TrimSpace(lines[k])
+		if t == "" || strings.HasPrefix(t, "//") || strings.HasPrefix(t, "/*") || strings.HasPrefix(t, "*") {
+			continue
+		}
+		if i := strings.Index(t, "constructor"); i >= 0 && (i == 0 || !isIdent(t[i-1])) && (i+11 == len(t) || !isIdent(t[i+11])) {
+			return true
+		}
+		if t[0] == '@' {
+			continue // an annotation of what the line after it declares
+		}
+		return t[0] == '{' || t[0] == '=' && !strings.HasPrefix(t, "==") || strings.HasPrefix(t, "where") && (len(t) == 5 || !isIdent(t[5]))
+	}
+	return false
+}
+
+// goesOnWith are the words that continue a definition after a block, with
+// a name right after them: } else if (x) {, <T extends { id: string }>
+// extends Base {.
+var goesOnWith = map[string]bool{"else": true, "extends": true, "implements": true, "throws": true, "where": true}
 
 // An expression goes on after a line that ends with one of these, or
 // when the next line starts with one of continuesBefore.

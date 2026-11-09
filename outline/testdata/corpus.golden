@@ -42,6 +42,15 @@ go/server.go
   44-49 func run go/server.go:run | func run()
   51-51 func run2 go/server.go:run2 | func run2()
   55-55 func afterBackslash go/server.go:afterBackslash | func afterBackslash() string
+go/types.go
+  4-4 type extractor go/types.go:extractor | type extractor func(s *state, i int) int
+  10-10 type Usage go/types.go:Usage | type Usage int
+  17-19 func Value go/types.go:Value | func Value() interface{}
+  21-23 func Set.Keys go/types.go:Set.Keys | func (s *Set) Keys() map[string]struct{}
+  25-30 func Min go/types.go:Min | func Min[T interface{ ~int | ~string }](x, y T) T
+  32-37 func Label go/types.go:Label | func Label[T interface
+  39-42 type Pair go/types.go:Pair | type Pair[K interface{ comparable }, V any] struct
+  44-44 func capacity go/types.go:capacity | func capacity(c any) int
 java/Store.java
   7-29 class Store java/Store.java:Store | public class Store
   14-16 method Store.add java/Store.java:Store.add | public void add(String item)
@@ -72,6 +81,16 @@ js/nested_template.js
   11-13 method Later.run js/nested_template.js:Later.run | run()
   24-26 function last js/nested_template.js:last | export function last()
   34-34 function generate js/nested_template.js:generate | function* generate()
+kotlin/Bodies.kt
+  3-47 class Seasons kotlin/Bodies.kt:Seasons | class Seasons
+  6-6 fun Seasons.getSerializedName kotlin/Bodies.kt:Seasons.getSerializedName | override fun getSerializedName(): String = id
+  8-12 fun Seasons.length kotlin/Bodies.kt:Seasons.length | fun length(): Int = try
+  14-20 fun Seasons.rank kotlin/Bodies.kt:Seasons.rank | fun rank(n: Int) = if (n > 9)
+  22-24 fun Seasons.able kotlin/Bodies.kt:Seasons.able | fun able(p: Person): Boolean =
+  26-28 fun Seasons.ghosts kotlin/Bodies.kt:Seasons.ghosts | fun ghosts(): List<Line> = slots.filter { it.left >= 0f }.map
+  30-33 fun Seasons.first kotlin/Bodies.kt:Seasons.first | fun <T> first(xs: List<T>): T
+  35-35 class Seasons.Icon kotlin/Bodies.kt:Seasons.Icon | private class Icon(val width: Int, val height: Int)
+  37-37 fun Seasons.wet kotlin/Bodies.kt:Seasons.wet | fun wet(x: Int, z: Int): Boolean
 kotlin/Store.kt
   3-3 class Item kotlin/Store.kt:Item | data class Item(val name: String)
   5-16 class Store kotlin/Store.kt:Store | class Store
@@ -109,6 +128,16 @@ ruby/store.rb
   17-19 def Store.self.create ruby/store.rb:Store.self.create | def self.create
   22-24 module Corpus ruby/store.rb:Corpus | module Corpus
   31-33 def top_level ruby/store.rb:top_level | def top_level
+rust/arrays.rs
+  3-5 struct Hit rust/arrays.rs:Hit | pub struct Hit
+  7-18 impl Hit rust/arrays.rs:Hit#2 | impl Hit
+  8-10 fn Hit.beside rust/arrays.rs:Hit.beside | fn beside(&self) -> [i32; 3]
+  12-17 fn Hit.nearest rust/arrays.rs:Hit.nearest | pub fn nearest(
+  20-24 impl Codec<[i32; 3]> for Hit rust/arrays.rs:Codec<[i32; 3]> for Hit | impl Codec<[i32; 3]> for Hit
+  21-23 fn Hit.read rust/arrays.rs:Hit.read | fn read(buf: &mut Buf) -> [i32; 3]
+  26-29 static CORNERS rust/arrays.rs:CORNERS | static CORNERS: [Hit; 2] = [
+  31-33 fn literals rust/arrays.rs:literals | fn literals(&self) -> ArrayVec<Literal, { Size::MAX }>
+  35-35 type Hash rust/arrays.rs:Hash | type Hash = [u8; 32];
 rust/lib.rs
   11-13 struct Grid rust/lib.rs:Grid | pub struct Grid<'a>
   15-23 impl Grid<'a> rust/lib.rs:Grid<'a> | impl<'a> Grid<'a>
@@ -165,9 +194,24 @@ ts/shortcuts.tsx
   2-8 function Shortcuts ts/shortcuts.tsx:Shortcuts | export function Shortcuts()
   10-12 function Other ts/shortcuts.tsx:Other | function Other()
   14-14 const Third ts/shortcuts.tsx:Third | const Third = () => <p>third</p>;
+ts/values.ts
+  2-4 function split ts/values.ts:split | function split(minutes: number): { amount: number; unit: string }
+  6-8 const boot ts/values.ts:boot | const boot = async (name: string): Promise<{ sample?: Sample; failure?: string }> =>
+  10-14 function parse ts/values.ts:parse | export function parse(
+  16-20 class Store ts/values.ts:Store | export class Store<T extends { id: string }> extends Base<T>
+  17-19 method Store.get ts/values.ts:Store.get | get(id: string): T | undefined
+  22-22 const abs ts/values.ts:abs | export const abs = (n: bigint): bigint => (n < zero ? -n : n)
+  28-32 const platform ts/values.ts:platform | const platform = (c: Compression): Context<Platform> =>
+  34-36 type ToolError ts/values.ts:ToolError | export type ToolError =
+  38-38 const next ts/values.ts:next | const next = () => count++
+  44-49 const ring ts/values.ts:ring | const ring = (cx: number, color: string): Shape => (
+  46-48 method ring.compile ts/values.ts:ring.compile | compile: (grid) =>
+  51-54 const models ts/values.ts:models | const models = (() =>
+  57-59 method search ts/values.ts:search | search: ((input: unknown) =>
+  62-63 const add ts/values.ts:add | const add = (a: number) => (
 ts/view.tsx
-  3-8 function View ts/view.tsx:View | export function View(props:
-  10-12 const Item ts/view.tsx:Item | export const Item = (
+  3-8 function View ts/view.tsx:View | export function View(props: { name: string })
+  10-12 const Item ts/view.tsx:Item | export const Item = ({ label }: { label: string }) =>
 vue/Help.vue
   9-11 method save vue/Help.vue:save | save()
   15-17 function helper vue/Help.vue:helper | function helper()
