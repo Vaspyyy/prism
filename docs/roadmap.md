@@ -116,6 +116,7 @@ Fixed since v1:
   - a value without a block and without a semicolon (`fun name(): String = id`, `const abs = (n) => (n < 0 ? -n : n)`, `type ID int`) ran on into the next block that wasn't a definition, such as Kotlin's `companion object {`, and became the parent of what was in it;
   - a block that closes and opens again on one line ended the definition (`} catch (e: E) {`, `} else {` in a Kotlin function with an expression body);
   - parentheses around an arrow function or the object it returns hid the body (`= (() => {`, `=> ({`).
+- **A Kotlin `enum class Mode` was named `class`**, and so were its members (`class.label`); `fun interface Check` was a function named `interface`, `inner class` a method, and `operator fun` and `abstract fun` weren't found (Prism 0.9.0).
 
 - **Ordinals differed between seek and the other tools** when a definition sat inside a docstring or template string. outline now drops definitions inside text that spans lines, and `outline.Multiline` gives seek the same classification (Prism 0.8.0, seek 0.5.0).
 - **crux had no "rerun only the failed tests" suggestion.** `testcmd.Rerun` keeps the original command's flags and reruns exactly what failed, Go subtests included (Prism 0.8.0 and 0.8.1, crux 0.7.0).

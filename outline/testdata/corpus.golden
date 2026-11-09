@@ -91,6 +91,19 @@ kotlin/Bodies.kt
   30-33 fun Seasons.first kotlin/Bodies.kt:Seasons.first | fun <T> first(xs: List<T>): T
   35-35 class Seasons.Icon kotlin/Bodies.kt:Seasons.Icon | private class Icon(val width: Int, val height: Int)
   37-37 fun Seasons.wet kotlin/Bodies.kt:Seasons.wet | fun wet(x: Int, z: Int): Boolean
+kotlin/Kinds.kt
+  3-8 enum Mode kotlin/Kinds.kt:Mode | enum class Mode(val id: String)
+  7-7 fun Mode.label kotlin/Kinds.kt:Mode.label | fun label(): String = id
+  10-10 class Marker kotlin/Kinds.kt:Marker | annotation class Marker
+  13-13 class Id kotlin/Kinds.kt:Id | value class Id(val raw: Int)
+  15-17 interface Check kotlin/Kinds.kt:Check | fun interface Check
+  16-16 fun Check.ok kotlin/Kinds.kt:Check.ok | fun ok(): Boolean
+  19-31 class Shape kotlin/Kinds.kt:Shape | abstract class Shape
+  20-20 fun Shape.area kotlin/Kinds.kt:Shape.area | abstract fun area(): Double
+  22-22 fun Shape.name kotlin/Kinds.kt:Shape.name | protected open fun name(): String = "shape"
+  24-24 fun Shape.plus kotlin/Kinds.kt:Shape.plus | operator fun plus(other: Shape): Shape = this
+  26-26 fun Shape.beside kotlin/Kinds.kt:Shape.beside | infix fun beside(other: Shape): Boolean = false
+  28-30 class Shape.Corner kotlin/Kinds.kt:Shape.Corner | private inner class Corner(val x: Int)
 kotlin/Store.kt
   3-3 class Item kotlin/Store.kt:Item | data class Item(val name: String)
   5-16 class Store kotlin/Store.kt:Store | class Store

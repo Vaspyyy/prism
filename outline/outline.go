@@ -162,8 +162,9 @@ var (
 		r("func", `^(?:[A-Za-z_][\w:<>,]*[\s*&]+)+([A-Za-z_][\w:~]*)\s*\([^;{})]*,\s*$`),
 	})
 	javaRules = prepare([]rule{
-		r("", `^\s{0,4}(?:public |private |protected |internal |abstract |final |sealed |data |open |static )*(class|interface|enum|record|object) (\w+)`),
-		r("fun", `^\s{0,4}(?:public |private |protected |internal |override |suspend |inline |open )*fun (?:<[^>]*> )?(?:\w+\.)?(\w+)`),
+		r("enum", `^\s{0,4}(?:public |private |protected |internal )*enum class (\w+)`), // Kotlin's, before Java's enum Name
+		r("", `^\s{0,4}(?:public |private |protected |internal |abstract |final |sealed |data |open |static |inner |value |annotation |fun )*(class|interface|enum|record|object) (\w+)`),
+		r("fun", `^\s{0,4}(?:public |private |protected |internal |override |suspend |inline |open |abstract |final |operator |infix |tailrec )*fun (?:<[^>]*> )?(?:\w+\.)?(\w+)`),
 		r("method", `^    (?:public |private |protected |static |final |synchronized |abstract )+[\w<>\[\], ]+ (\w+)\s*\(`),
 	})
 	gdRules = prepare([]rule{
