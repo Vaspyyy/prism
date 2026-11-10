@@ -130,6 +130,14 @@ type lang struct {
 	// a statement may end without a semicolon, so a value ends with its
 	// line unless something says it goes on
 	noSemi bool
+	// a statement can go on in a line that is indented more, with no
+	// operator at the break (not in Go, where a line ends its statement
+	// unless it ends with an operator or an open bracket)
+	deeper bool
+	// ... but not where two values would meet at the break, which ends a
+	// statement in JavaScript. Kotlin and Scala can't tell: a name can be
+	// an operator there (a or b).
+	asi bool
 }
 
 var (
@@ -139,8 +147,13 @@ var (
 	})
 	rustRules = prepare([]rule{
 		r("", `^\s*(?:pub(?:\([^)]*\))? )?(?:async )?(?:unsafe )?(?:const )?(fn|struct|enum|trait|mod|type|union|static|macro_rules!) (\w+)`),
-		// also impls nested in mod tests or a function; tuple and array types in the generics
-		r("impl", `^\s*impl(?:<[^>]*>)? ([\w:<>, '&()\[\];]*?[\w>)\]])(?: \{|$| where)`),
+		// also impls nested in mod tests or a function; tuple and array types
+		// and { N } in the generics. The header ends in a name or a bracket:
+		// impl X for Y; is a macro's, and impl Fn(u8), and impl Iterator<
+		// start a parameter's type. Or it goes on in the next line, in the
+		// generics of the type a trait is implemented for (for Foo<) or in
+		// its own (impl <'a,).
+		r("impl", `^\s*impl(?:<[^>]*>)? ((?:[\w:<>, '&()\[\];]|\{ [\w: +*-]+ \})*?[\w>)\]]|[\w:<>, '&()\[\];]* for [\w:<>, '&()\[\];]*[<,]|<[^>$]*) *(?: \{|$| where)`),
 	})
 	pyRules = prepare([]rule{
 		r("", `^\s*(?:async )?(def|class) ([\p{L}_][\p{L}\p{N}_]*)`), // also nested helpers and classes
@@ -186,10 +199,10 @@ var (
 	goLang   = lang{rules: goRules, sameLine: true, noSemi: true}
 	rustLang = lang{rules: rustRules}
 	pyLang   = lang{rules: pyRules, style: indent}
-	jsLang   = lang{rules: jsRules, noSemi: true}
+	jsLang   = lang{rules: jsRules, noSemi: true, deeper: true, asi: true}
 	cLang    = lang{rules: cRules}
 	javaLang = lang{rules: javaRules}
-	ktLang   = lang{rules: javaRules, sameLine: true, noSemi: true}
+	ktLang   = lang{rules: javaRules, sameLine: true, noSemi: true, deeper: true} // Scala too
 	gdLang   = lang{rules: gdRules, style: indent}
 	shLang   = lang{rules: shRules}
 	luaLang  = lang{rules: luaRules, style: keyword}
@@ -202,7 +215,7 @@ var langByExt = map[string]*lang{
 	"js": &jsLang, "mjs": &jsLang, "cjs": &jsLang, "ts": &jsLang, "tsx": &jsLang, "jsx": &jsLang, "mts": &jsLang,
 	"svelte": &jsLang, "vue": &jsLang,
 	"c": &cLang, "h": &cLang, "cc": &cLang, "cpp": &cLang, "cxx": &cLang, "hpp": &cLang, "hh": &cLang,
-	"java": &javaLang, "kt": &ktLang, "kts": &ktLang, "cs": &javaLang, "scala": &javaLang,
+	"java": &javaLang, "kt": &ktLang, "kts": &ktLang, "cs": &javaLang, "scala": &ktLang,
 	"gd": &gdLang, "sh": &shLang, "bash": &shLang, "zsh": &shLang,
 	"lua": &luaLang, "rb": &rbLang, "md": &mdLang, "markdown": &mdLang,
 }
@@ -541,12 +554,15 @@ func braceEnd(src *source, start, limit int, kind string, lg *lang, later []Symb
 						if depth--; depth != 0 {
 							break
 						}
+						rest := restCode(line, lx.segs, si, k+1)
 						switch {
-						case funcBody:
-							return j + 1, body // a function's body is the last of it
+						case funcBody && !strings.HasPrefix(strings.TrimLeft(rest, " \t"), "("):
+							// a function's body is the last of it, unless
+							// it's called right there: function (x) {…}(function () {
+							return j + 1, body
 						case blockFollows(line, lx.segs, si, k+1, value):
 							// it wasn't the body: func f() interface{} {
-						case goesOnAfterBlock(lines, j, base, restCode(line, lx.segs, si, k+1), lg.noSemi):
+						case goesOnAfterBlock(lines, j, base, rest, lg, lx.in == comment, angle > 0):
 							// nor here: it was in a type or in an expression
 							// that goes on (<T extends { id: string }>(, a
 							// union's | { … }, a chain's .map { … }), and
@@ -654,13 +670,17 @@ func braceEnd(src *source, start, limit int, kind string, lg *lang, later []Symb
 				}
 			}
 		}
-		if opened {
-			continue // how the line ends matters only before the block
+		if opened || lineEnd == 0 {
+			continue // how the line ends matters only before the block, and a line without code doesn't end
 		}
+		tail := codeEnd(line, lx.segs)
 		goesOn := strings.IndexByte(continuesAfter, lineEnd) >= 0 && (lineEnd != '>' || endPrev == '=') && // a > ends a type, => goes on
 			!((lineEnd == '+' || lineEnd == '-') && endPrev == lineEnd) && // and so does i++
-			!(lg.noSemi && (lineEnd == '?' || lineEnd == '!')) // and Entity? and find()!! more often than half a ?: does
-		ends := !lx.inText() && !goesOn && !nextContinues(lines, j, base, lg.noSemi)
+			// where a line can end a statement, value! and find()!! do, and
+			// Entity? in Kotlin; in JavaScript a ? is half a ?:
+			!(lg.noSemi && (lineEnd == '!' || lineEnd == '?' && !lg.asi)) ||
+			tail == "else" // if (x) / a / else / b
+		ends := !lx.inText() && !goesOn && !nextContinues(lines, j, base, lg, lx.in == comment, tail)
 		if strBody {
 			if ends && nest <= 0 && lineEnd != 0 { // a line of only a comment doesn't end it
 				return j + 1, body
@@ -784,9 +804,14 @@ func wrapsValue(rest string, last, prev byte) bool {
 // definition although line j ended like a statement: with its block, on a
 // line of its own ({), its value (= x), or more of its header (where T : X,
 // and with ctor a class's private constructor(…)), also after its
-// annotations.
+// annotations (@Inject, on that line or on lines of their own).
 func headerGoesOn(lines []string, j int, ctor bool) bool {
-	k, t := nextCode(lines, j, true)
+	k, t := nextCode(lines, j, false)
+	for k >= 0 && t[0] == '@' {
+		if t = afterAnnotation(t); t == "" {
+			k, t = nextCode(lines, k, false)
+		}
+	}
 	if k < 0 {
 		return false
 	}
@@ -801,6 +826,28 @@ func headerGoesOn(lines []string, j int, ctor bool) bool {
 	return t[0] == '{' || t[0] == '=' && !strings.HasPrefix(t, "==") || isWord(t, "where")
 }
 
+// afterAnnotation is what follows the annotation t starts with: @Inject,
+// @field:Json(name = "id").
+func afterAnnotation(t string) string {
+	i := 1
+	for i < len(t) && (isIdent(t[i]) || t[i] == '.' || t[i] == ':' || t[i] >= 0x80) {
+		i++
+	}
+	if i < len(t) && t[i] == '(' {
+		for depth := 0; i < len(t); i++ {
+			if t[i] == '(' {
+				depth++
+			} else if t[i] == ')' {
+				if depth--; depth == 0 {
+					i++
+					break
+				}
+			}
+		}
+	}
+	return strings.TrimLeft(t[i:], " \t")
+}
+
 // isWord reports whether t starts with the word w.
 func isWord(t, w string) bool {
 	return strings.HasPrefix(t, w) && (len(t) == len(w) || !isIdent(t[len(w)]))
@@ -808,10 +855,10 @@ func isWord(t, w string) bool {
 
 // goesOnWith are the words that continue a definition after a block, with
 // a name right after them: } else if (x) {, <T extends { id: string }>
-// extends Base {, }): readonly T[] {.
+// extends Base {, }): readonly T[] {, impl Tr<{ N }> for X {.
 var goesOnWith = map[string]bool{
 	"else": true, "if": true, "extends": true, "implements": true, "throws": true, "where": true,
-	"readonly": true, "keyof": true, "typeof": true, "asserts": true, "infer": true,
+	"readonly": true, "keyof": true, "typeof": true, "asserts": true, "infer": true, "for": true,
 }
 
 // An expression goes on after a line that ends with one of these, or
@@ -823,16 +870,14 @@ const (
 
 // nextCode is the next line after j that has code on it, within ten
 // lines: its index and its text without the blanks around it, or -1.
-// Comments aren't code, and with annots neither are the annotations of
-// what the line after them declares (@Inject).
-func nextCode(lines []string, j int, annots bool) (int, string) {
-	inComment := false
+// Comments aren't code; inComment says that line j ends in one.
+func nextCode(lines []string, j int, inComment bool) (int, string) {
 	for k := j + 1; k < len(lines) && k <= j+10; k++ {
 		t := strings.TrimSpace(lines[k])
 		switch {
 		case inComment:
 			inComment = !strings.Contains(t, "*/")
-		case t == "" || strings.HasPrefix(t, "//") || strings.HasPrefix(t, "*") || annots && t[0] == '@':
+		case t == "" || strings.HasPrefix(t, "//"):
 		case strings.HasPrefix(t, "/*"):
 			inComment = !strings.Contains(t[2:], "*/")
 		default:
@@ -844,43 +889,167 @@ func nextCode(lines []string, j int, annots bool) (int, string) {
 
 // continues reports whether a line that starts with t goes on with the
 // expression before it: with an operator (...rest is the next element,
-// not a member), or with else.
+// not a member), or with else (else() is a method of that name).
 func continues(t string) bool {
-	return strings.IndexByte(continuesBefore, t[0]) >= 0 && !strings.HasPrefix(t, "...") || isWord(t, "else")
+	if isWord(t, "else") {
+		return !strings.HasPrefix(strings.TrimLeft(t[len("else"):], " \t"), "(")
+	}
+	return strings.IndexByte(continuesBefore, t[0]) >= 0 && !strings.HasPrefix(t, "...")
+}
+
+// goesOnIn reports whether the statement of a definition indented by base
+// goes on in line k, whose text without the blanks around it is t, after
+// code that ends with tail (see codeEnd). It does when the line starts
+// with an operator or with else and isn't indented less than the
+// definition (an else further out belongs to an if around it).
+func goesOnIn(lines []string, k int, t string, base int, lg *lang, tail string) bool {
+	return indentOf(lines[k]) >= base && continues(t) || isDeeper(lines, k, t, base, lg, tail)
+}
+
+// isDeeper reports whether line k goes on with the statement of a
+// definition indented by base because it is indented more, as the lines
+// of a statement are and the next statement isn't (where lg.deeper says
+// so). It doesn't when it starts a statement (a keyword does that also
+// where its indentation is off), or when two values would meet at the
+// break (lg.asi).
+func isDeeper(lines []string, k int, t string, base int, lg *lang, tail string) bool {
+	return lg.deeper && indentOf(lines[k]) > base && !startsStatement(t) && !(lg.asi && isValue(tail, true) && isValue(t, false))
 }
 
 // nextContinues reports whether the next line of code goes on with the
-// statement of a definition indented by base: it starts with an operator
-// or with else, or, where statements end without a semicolon (noSemi), it
-// is indented more than the definition, as the lines of a statement are
-// and the next statement isn't.
-func nextContinues(lines []string, j, base int, noSemi bool) bool {
-	k, t := nextCode(lines, j, false)
-	return k >= 0 && (continues(t) || noSemi && indentOf(lines[k]) > base)
+// statement of a definition indented by base (see goesOnIn).
+func nextContinues(lines []string, j, base int, lg *lang, inComment bool, tail string) bool {
+	k, t := nextCode(lines, j, inComment)
+	return k >= 0 && goesOnIn(lines, k, t, base, lg, tail)
+}
+
+// statementWords start a statement or a declaration, never the next line
+// of an expression.
+var statementWords = map[string]bool{
+	"export": true, "import": true, "package": true, "interface": true, "class": true, "object": true, "enum": true,
+	"const": true, "let": true, "var": true, "val": true, "fun": true, "function": true, "def": true, "type": true,
+	"typealias": true, "declare": true, "namespace": true, "abstract": true, "private": true, "public": true,
+	"protected": true, "internal": true, "override": true, "open": true, "sealed": true, "data": true, "companion": true,
+	"static": true, "final": true, "lazy": true, "implicit": true, "trait": true, "case": true, "return": true,
+	"throw": true, "if": true, "for": true, "while": true, "do": true, "switch": true, "try": true,
+}
+
+// startsStatement reports whether a line that starts with t starts a
+// statement or a declaration: with one of statementWords and something
+// after it that isn't an operator (type is a name in type === "a"), or
+// with an annotation.
+func startsStatement(t string) bool {
+	if t[0] == '@' {
+		return true
+	}
+	i := 0
+	for i < len(t) && isIdent(t[i]) {
+		i++
+	}
+	if !statementWords[t[:i]] {
+		return false
+	}
+	rest := strings.TrimLeft(t[i:], " \t")
+	return rest == "" || isIdent(rest[0]) || rest[0] >= 0x80 || strings.IndexByte("({[<*\"'`@", rest[0]) >= 0 && t[:i] != "type"
+}
+
+// valueWords are operators spelled as words: what ends with one, or
+// starts with one, isn't a value on its own.
+var valueWords = map[string]bool{
+	"in": true, "of": true, "instanceof": true, "as": true, "satisfies": true, "is": true, "extends": true,
+	"implements": true, "typeof": true, "keyof": true, "infer": true, "readonly": true, "asserts": true, "new": true,
+	"await": true, "yield": true, "void": true, "delete": true, "return": true, "throw": true, "else": true, "case": true,
+}
+
+// isValue reports whether code that ends with t (at its end), or that
+// starts with t, is a value there: a name, a number, a string, or what a
+// bracket closes (opens: only a {, since ( and [ and a template call or
+// index the value before them). Two values with nothing between them
+// aren't one expression.
+func isValue(t string, end bool) bool {
+	if t == "" {
+		return false
+	}
+	c := t[0]
+	if end {
+		c = t[len(t)-1]
+	}
+	switch {
+	case isIdent(c) || c >= 0x80:
+		i, j := 0, len(t)
+		if end {
+			for i = len(t); i > 0 && (isIdent(t[i-1]) || t[i-1] >= 0x80); i-- {
+			}
+		} else {
+			for j = 0; j < len(t) && (isIdent(t[j]) || t[j] >= 0x80); j++ {
+			}
+		}
+		return !valueWords[t[i:j]]
+	case c == '"' || c == '\'':
+		return true
+	case end:
+		return c == ')' || c == ']' || c == '}' || c == '`'
+	}
+	return c == '{' || c == '#'
+}
+
+// codeEnd is how the code of a line ends: its last word, or its last byte
+// when that isn't part of one, " for a string, and "" when it has none.
+func codeEnd(line string, segs []seg) string {
+	for si := len(segs) - 1; si >= 0; si-- {
+		sg := segs[si]
+		switch sg.kind {
+		case comment:
+			continue
+		case str:
+			return `"`
+		}
+		t := strings.TrimRight(line[sg.from:sg.to], " \t")
+		if t == "" {
+			continue
+		}
+		i := len(t)
+		for i > 0 && (isIdent(t[i-1]) || t[i-1] >= 0x80) {
+			i--
+		}
+		if i == len(t) {
+			i--
+		}
+		return t[i:]
+	}
+	return ""
 }
 
 // goesOnAfterBlock reports whether a definition indented by base goes on
 // after a {…} that closed on line j, with rest after it on the line. It
 // doesn't when a statement ends or another block opens in rest. It does
 // when the header went on after the block (Foo<{ N }>, more than a comma)
-// and the next line starts the body or more of it ({, where). Where statements end without
-// a semicolon (noSemi), it also does on a next line that is indented
-// more, that closes the generics the block was in (>), or that starts
-// with an operator; after a comma, though, a line that isn't indented
-// more is the next element.
-func goesOnAfterBlock(lines []string, j, base int, rest string, noSemi bool) bool {
+// and the next line starts the body or more of it ({, where, for X). Where
+// statements end without a semicolon (lg.noSemi), it also does on a next
+// line that closes the generics the block was in (>), that is indented
+// more (see isDeeper; in generics, whatever it starts with: const T) or
+// that starts with an operator; after a comma, though, a line that isn't
+// indented more is the next element.
+func goesOnAfterBlock(lines []string, j, base int, rest string, lg *lang, inComment, generics bool) bool {
 	if strings.ContainsAny(rest, "{;") {
 		return false
 	}
-	k, t := nextCode(lines, j, false)
+	k, t := nextCode(lines, j, inComment)
 	if k < 0 {
 		return false
 	}
-	comma := strings.Contains(rest, ",")
-	if noSemi && (indentOf(lines[k]) > base || t[0] == '>' || !comma && t[0] != ',' && continues(t)) {
-		return true
+	if lg.noSemi {
+		tail := strings.TrimRight(rest, " \t")
+		if tail == "" {
+			tail = "}"
+		}
+		after := strings.Contains(rest, ",") || t[0] == ','
+		ind := indentOf(lines[k])
+		if t[0] == '>' || generics && lg.deeper && ind > base || isDeeper(lines, k, t, base, lg, tail) || !after && ind >= base && continues(t) {
+			return true
+		}
 	}
-	return strings.Trim(rest, " \t,") != "" && (t[0] == '{' || isWord(t, "where"))
+	return strings.Trim(rest, " \t,") != "" && (t[0] == '{' || isWord(t, "where") || isWord(t, "for"))
 }
 
 // restCode is the code in the rest of a line, from byte k of its part si.

@@ -76,3 +76,51 @@ func TestSignatureOfOneLine(t *testing.T) {
 		}
 	}
 }
+
+// What the review of those fixes found: each case was right before them.
+var secondReview = []struct{ name, src, want string }{
+	// an impl's header ends in more than a name: blanks, a comment, generics that go on
+	{"blanks.rs", "impl Foo for Bar  {\n    fn f(&self) {}\n}\n", "impl Foo for Bar 1-3; fn Bar.f 2-2"},
+	{"note.rs", "impl Foo for Bar // why\n{\n    fn f(&self) {}\n}\n", "impl Foo for Bar 1-4; fn Bar.f 3-3"},
+	{"open.rs", "impl<A, B> Service<Request> for Foo<\n    A,\n    B,\n> {\n    fn f(&self) {}\n}\n", "impl Service<Request> for Foo< 1-6; fn Foo.f 5-5"},
+	{"wide.rs", "impl <'state,\n      T: 'state> Drop for State<'state, T> {\n    fn drop(&mut self) {}\n}\n", "impl <'state, 1-4; fn <'state,.drop 3-3"}, // the name is the line's, as it was
+	{"cgen.rs", "impl Provides<wl::Compositor, { VERSION }> for State {\n    fn bound(&self) {}\n}\n", "impl Provides<wl::Compositor, { VERSION }> for State 1-3; fn State.bound 2-2"},
+	{"cgen2.rs", "impl Provides<wl::Compositor, { State::MAX }>\n    for State\n{\n    fn bound(&self) {}\n}\n\nfn after() {}\n", "impl Provides<wl::Compositor, { State::MAX }> 1-5; fn Provides.bound 4-4; fn after 7-7"},
+	// impl at the start of a line is a parameter's type when a comma ends it, or when it goes on
+	{"ret.rs", "fn find<'u>(\n    &'u self,\n) -> Lookup<\n    impl Continuation<\n        Output = u8,\n    >,\n> {\n    todo!()\n}\n", "fn find 1-9"},
+	{"arg.rs", "pub fn expression<I, O>(\n    prefix: u8,\n    postfix:\n    impl Parser<I, Postfix<I, O>>,\n) -> u8 {\n    0\n}\n", "fn expression 1-7"},
+	// a line that is indented more starts the next statement when a keyword says so,
+	// or when two values meet there; never in Go
+	{"odd.d.ts", "type MatchType = \"begin\" | \"end\"\n\n interface Emitter {\n    addText(text: string): void\n }\n\ninterface Mode {\n  a: string\n}\n", "type MatchType 1-1; interface Mode 7-9"},
+	{"odd2.d.ts", "export interface Disposable {\n    dispose(): void;\n}\n/**\n * An event.\n */\n export interface Event<T> {\n    (listener: (e: T) => any): Disposable;\n}\n\nexport type Agent = any;\n", "interface Disposable 1-3; type Agent 11-11"},
+	{"odd.ts", "const noop = () => undefined\n  doSomething({\n    a: 1,\n  })\nconst next = () => 1\n", "const noop 1-1; const next 5-5"},
+	{"odd.kt", "interface A {\n    fun a(): Int\n      // sloppy\n      val x: Int\n    fun b(): Int\n}\n", "interface A 1-6; fun A.a 2-2; fun A.b 5-5"},
+	{"odd.go", "package a\n\ntype A int\n\tvar x = 1\n\nfunc after() {}\n", "type A 3-3; func after 6-6"},
+	// ... but not in the definition's generics, where const starts a type parameter
+	{"cparam.ts", "export function encodeKeys<\n  S extends Constraint & { readonly fields: Fields },\n  const M extends { readonly [K in keyof S]?: PropertyKey }\n>(mapping: M) {\n  return mapping\n}\n\nexport const next = () => 1\n", "function encodeKeys 1-6; const next 8-8"},
+	// else continues an if of the definition, not one around it, and isn't a method's name
+	{"else.ts", "class CodeGen {\n  elseIf(cond: boolean): CodeGen {\n    return this._elseNode(cond)\n  }\n\n  else(): CodeGen {\n    return this._elseNode(true)\n  }\n}\n", "class CodeGen 1-9; method CodeGen.elseIf 2-4"},
+	{"else.js", "if (typeof define === \"function\")\n  exports.make = function () {\n    return 1\n  }\nelse\n  exports.make = function () {\n    return 2\n  }\n", "function exports.make 2-4; function exports.make 6-8"},
+	// a ? at the end of a line is half a ?: in JavaScript, wherever the other half is
+	{"cond.d.ts", "type U<X> = (X extends unknown ? (d: X) => void : never) extends (m: infer I) => void ? // note\nI & X : never;\ntype Next = 1;\n", "type U 1-2; type Next 3-3"},
+	{"nullish.ts", "const pick = (a?: number) => a ??\n0\nconst next = () => 1\n", "const pick 1-2; const next 3-3"},
+	// a function that is called where its body ends goes on with the call
+	{"iife.js", "var o = {\n  onDone: function (_onDone) {\n    return _onDone;\n  }(function () {\n    done();\n  })\n};\n", "method onDone 2-6"},
+	// *[Symbol.iterator]() is a member, not a line of a comment
+	{"iter.ts", "class List<E> {\n  remove(node: E): void {\n    this.size -= 1\n  }\n\n  *[Symbol.iterator](): Iterator<E> {\n    let node = this.first\n    while (node) {\n      yield node\n    }\n  }\n}\n", "class List 1-12; method List.remove 2-4"},
+	// a constructor after its annotation, on the line after the class's
+	{"inject.kt", "class LoginViewModel\n@Inject constructor(\n    private val repo: Repo,\n) : ViewModel() {\n    fun f() = 1\n}\n\nfun after() = 1\n", "class LoginViewModel 1-6; fun LoginViewModel.f 5-5; fun after 8-8"},
+	{"named.kt", "class Api\n@Inject\n@Named(\"io\") internal constructor(val c: Client) {\n    fun f() = 1\n}\n", "class Api 1-5; fun Api.f 4-4"},
+	// a comment between a header and its value doesn't end the statement
+	{"note.kt", "class M {\n  private fun name(s: String): String =\n      // as the UI manager has it\n      if (s.startsWith(\"on\")) {\n        \"top\"\n      } else {\n        s\n      }\n\n  private companion object {\n    const val A = 1\n  }\n}\n", "class M 1-13; fun M.name 2-8"},
+	// Scala ends a value with its line, as Kotlin does
+	{"value.scala", "object M {\n    final def id(x: Int): Int = x\n    lazy val v = {\n      1\n    }\n    def run(): Unit = {}\n}\n", "object M 1-7; method M.id 2-2"},
+}
+
+func TestEndsFoundInTheSecondReview(t *testing.T) {
+	for _, c := range secondReview {
+		if got := spans(c.name, c.src); got != c.want {
+			t.Errorf("%s:\n got  %s\n want %s", c.name, got, c.want)
+		}
+	}
+}
