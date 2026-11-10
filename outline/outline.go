@@ -123,6 +123,23 @@ const (
 type lang struct {
 	rules []rule
 	style style
+	// a block opens on the line its header ends on, as gofmt and Kotlin's
+	// style have it, so a declaration that ends its line without one has
+	// none (headerGoesOn has the exceptions)
+	sameLine bool
+	// a statement may end without a semicolon, so a value ends with its
+	// line unless something says it goes on
+	noSemi bool
+	// a statement can go on in a line that is indented more, with no
+	// operator at the break (not in Go, where a line ends its statement
+	// unless it ends with an operator or an open bracket)
+	deeper bool
+	// ... but not where two values would meet at the break, which ends a
+	// statement in JavaScript. Kotlin and Scala can't tell: a name can be
+	// an operator there (a or b).
+	asi bool
+	// a /* in a comment opens another, which has its own */
+	nests bool
 }
 
 var (
@@ -132,8 +149,13 @@ var (
 	})
 	rustRules = prepare([]rule{
 		r("", `^\s*(?:pub(?:\([^)]*\))? )?(?:async )?(?:unsafe )?(?:const )?(fn|struct|enum|trait|mod|type|union|static|macro_rules!) (\w+)`),
-		// also impls nested in mod tests or a function; tuple types in the generics
-		r("impl", `^\s*impl(?:<[^>]*>)? ([\w:<>, '&()\[\]]+?)(?: \{|$| where)`),
+		// also impls nested in mod tests or a function; tuple and array types
+		// and { N } in the generics. The header ends in a name or a bracket:
+		// impl X for Y; is a macro's, and impl Fn(u8), and impl Iterator<
+		// start a parameter's type. Or it goes on in the next line, in the
+		// generics of the type a trait is implemented for (for Foo<) or in
+		// its own (impl <'a,).
+		r("impl", `^\s*impl(?:<[^>]*>)? ((?:[\w:<>, '&()\[\];]|\{ [\w: +*-]+ \})*?[\w>)\]]|[\w:<>, '&()\[\];]* for [\w:<>, '&()\[\];]*[<,]|<[^>$]*) *(?: \{|$| where)`),
 	})
 	pyRules = prepare([]rule{
 		r("", `^\s*(?:async )?(def|class) ([\p{L}_][\p{L}\p{N}_]*)`), // also nested helpers and classes
@@ -158,8 +180,9 @@ var (
 		r("func", `^(?:[A-Za-z_][\w:<>,]*[\s*&]+)+([A-Za-z_][\w:~]*)\s*\([^;{})]*,\s*$`),
 	})
 	javaRules = prepare([]rule{
-		r("", `^\s{0,4}(?:public |private |protected |internal |abstract |final |sealed |data |open |static )*(class|interface|enum|record|object) (\w+)`),
-		r("fun", `^\s{0,4}(?:public |private |protected |internal |override |suspend |inline |open )*fun (?:<[^>]*> )?(?:\w+\.)?(\w+)`),
+		r("enum", `^\s{0,4}(?:public |private |protected |internal )*enum class (\w+)`), // Kotlin's, before Java's enum Name
+		r("", `^\s{0,4}(?:public |private |protected |internal |abstract |final |sealed |data |open |static |inner |value |annotation |fun )*(class|interface|enum|record|object) (\w+)`),
+		r("fun", `^\s{0,4}(?:public |private |protected |internal |override |suspend |inline |open |abstract |final |operator |infix |tailrec )*fun (?:<[^>]*> )?(?:\w+\.)?(\w+)`),
 		r("method", `^    (?:public |private |protected |static |final |synchronized |abstract )+[\w<>\[\], ]+ (\w+)\s*\(`),
 	})
 	gdRules = prepare([]rule{
@@ -175,12 +198,13 @@ var (
 )
 
 var (
-	goLang   = lang{rules: goRules}
+	goLang   = lang{rules: goRules, sameLine: true, noSemi: true}
 	rustLang = lang{rules: rustRules}
 	pyLang   = lang{rules: pyRules, style: indent}
-	jsLang   = lang{rules: jsRules}
+	jsLang   = lang{rules: jsRules, noSemi: true, deeper: true, asi: true}
 	cLang    = lang{rules: cRules}
 	javaLang = lang{rules: javaRules}
+	ktLang   = lang{rules: javaRules, sameLine: true, noSemi: true, deeper: true, nests: true} // Scala too
 	gdLang   = lang{rules: gdRules, style: indent}
 	shLang   = lang{rules: shRules}
 	luaLang  = lang{rules: luaRules, style: keyword}
@@ -193,7 +217,7 @@ var langByExt = map[string]*lang{
 	"js": &jsLang, "mjs": &jsLang, "cjs": &jsLang, "ts": &jsLang, "tsx": &jsLang, "jsx": &jsLang, "mts": &jsLang,
 	"svelte": &jsLang, "vue": &jsLang,
 	"c": &cLang, "h": &cLang, "cc": &cLang, "cpp": &cLang, "cxx": &cLang, "hpp": &cLang, "hh": &cLang,
-	"java": &javaLang, "kt": &javaLang, "kts": &javaLang, "cs": &javaLang, "scala": &javaLang,
+	"java": &javaLang, "kt": &ktLang, "kts": &ktLang, "cs": &javaLang, "scala": &ktLang,
 	"gd": &gdLang, "sh": &shLang, "bash": &shLang, "zsh": &shLang,
 	"lua": &luaLang, "rb": &rbLang, "md": &mdLang, "markdown": &mdLang,
 }
@@ -327,16 +351,37 @@ func parse(name string, data []byte, limit int, keepText bool) []Symbol {
 			if i := strings.IndexByte(sig, '{'); i > 0 && !md {
 				sig = strings.TrimSpace(sig[:i]) // signature only, not a one-line body
 			}
-			if r := []rune(sig); len(r) > 110 {
-				sig = string(r[:109]) + "…"
-			}
-			out = append(out, Symbol{Line: i + 1, End: i + 1, Kind: kind, Name: strings.TrimSpace(name), Sig: sig, Parent: -1})
+			out = append(out, Symbol{Line: i + 1, End: i + 1, Kind: kind, Name: strings.TrimSpace(name), Sig: clip(sig), Parent: -1})
 			break
 		}
 	}
 	findEnds(lg, src, text, out)
 	findParents(out)
 	return out
+}
+
+// clip shortens a signature to at most 110 characters.
+func clip(sig string) string {
+	if r := []rune(sig); len(r) > 110 {
+		return string(r[:109]) + "…"
+	}
+	return sig
+}
+
+// sigBefore is line n up to byte body, where the definition's block opens,
+// made a signature as parse makes one: without comments, trimmed, clipped.
+// It is for a line with a { before the block's (func f() interface{} {),
+// where parse stopped at the first.
+func sigBefore(src *source, n, body int) string {
+	lx := newLexer(src)
+	lx.scan(n)
+	var b strings.Builder
+	for _, sg := range lx.segs {
+		if sg.kind != comment && sg.from < body {
+			b.WriteString(src.lines[n][sg.from:min(sg.to, body)])
+		}
+	}
+	return clip(strings.TrimSpace(b.String()))
 }
 
 // stripComments returns the line without its comments, keeping strings
@@ -393,7 +438,11 @@ func findEnds(lg *lang, src *source, text []bool, syms []Symbol) {
 			if k+1 < len(syms) {
 				limit = syms[k+1].Line - 1
 			}
-			s.End = braceEnd(src, s.Line-1, limit, s.Kind == "define")
+			var body int
+			s.End, body = braceEnd(src, s.Line-1, limit, s.Kind, lg, syms[k+1:])
+			if body > 0 && s.End > s.Line && strings.IndexByte(lines[s.Line-1][:body], '{') >= 0 {
+				s.Sig = sigBefore(src, s.Line-1, body) // the block that goes on is the body, not the first on the line
+			}
 		case indent, keyword:
 			s.End = indentEnd(lines, text, s.Line-1, lg.style == keyword)
 		case headings:
@@ -414,18 +463,25 @@ func findEnds(lg *lang, src *source, text []bool, syms []Symbol) {
 // braceEnd returns the 1-based line of the brace that closes the block
 // opened on or after line start (0-based). A declaration without a block
 // (`type ID int`, `fn f();`) ends on its own line, and one whose value is
-// an expression with a string in it (const f = () => `…`) where that
-// expression ends.
-func braceEnd(src *source, start, limit int, define bool) int {
+// an expression (fun f() = x, const f = () => `…`) where that expression
+// ends. With lg.sameLine, the block opens on the line its header ends on.
+// later are the definitions after this one: its block opens before the
+// next of them, unless that one is inside its brackets. body is where the
+// block's { is on the definition's own line, or -1 when it isn't there.
+func braceEnd(src *source, start, limit int, kind string, lg *lang, later []Symbol) (end, body int) {
 	lines := src.lines
-	if define { // #define with continuation lines
+	body = -1
+	if kind == "define" { // #define with continuation lines
 		j := start
 		for j+1 < len(lines) && strings.HasSuffix(strings.TrimRight(lines[j], " \t"), "\\") {
 			j++
 		}
-		return j + 1
+		return j + 1, body
 	}
 	lx := newLexer(src) // the definition's line starts in code
+	base := indentOf(lines[start])
+	// a Kotlin class's constructor can follow on a line of its own
+	ctor := lg.sameLine && (kind == "class" || kind == "enum" || kind == "interface" || kind == "object")
 	depth, opened, parens := 0, false, 0
 	var last, prev byte      // the last code byte that isn't blank, and the one right before it (or ' ')
 	inStmt, angle := true, 0 // still in the definition's statement; inside <generics>
@@ -434,33 +490,55 @@ func braceEnd(src *source, start, limit int, define bool) int {
 	// where that expression does, at a ; or at a line that the next doesn't
 	// continue, with its brackets closed.
 	value, strBody, nest, brackets := false, false, 0, 0
+	inner := 0               // the { open in a type's brackets, which aren't blocks
+	wrap := 0                // the ( open around the value, which aren't parameters: = ((a) => {
+	funcBody := false        // the block that is open follows a parameter list: f() {
+	closed := 0              // the line a block closed on that the definition went on after, or 0
+	header := start          // the last line that started in the header's brackets
+	tag := false             // the value starts with a <: a JSX element (or XML in Scala), whose lines aren't statements
 	atValue := func() bool { // right after = or =>
 		return last == '=' && !strings.ContainsRune("=!<>", rune(prev)) || last == '>' && prev == '='
 	}
+	giveUp := func() (int, int) { // no block, or no end, was found
+		if closed > 0 {
+			return closed, body
+		}
+		return start + 1, body
+	}
 	for j := start; j < len(lines); j++ {
-		if !opened && j >= limit && j > start {
+		// The block opens before the next definition, and within 30 lines
+		// of the definition's line or of the last block of its header.
+		// What's inside the definition's brackets is neither: the functions
+		// in a call (= Effect.gen(function* () {), a long table (= &[).
+		if !opened && j > start && (j >= limit || j-max(start, closed-1) > 31) {
 			switch {
 			case strBody && nest > 0: // definitions in the value's brackets ({ f: function() {…} })
 			case strBody:
-				return j // the line before the next definition
+				if j >= limit {
+					return j, body // the line before the next definition
+				}
+			case (parens > 0 || brackets > 0) && inside(lines[j], base):
 			default:
-				return start + 1
+				return giveUp()
 			}
 		}
 		if src.endBudget -= len(lines[j]) + 1; src.endBudget < 0 {
 			break // as if the file ended here
 		}
+		if !opened && (parens > 0 || brackets > 0 || wrap > 0) {
+			header = j
+		}
 		lx.scan(j)
 		line := lines[j]
 		gap := true                          // a blank (or a new line) since last
 		lineEnd, endPrev := byte(0), byte(0) // how the line ends: its last code byte ('"' for a string), the one before
-		for _, sg := range lx.segs {
+		for si, sg := range lx.segs {
 			if sg.kind == str {
 				lineEnd, endPrev = '"', 0
 				top := !opened && parens == 0 && angle == 0 && inStmt
 				value = value || top && atValue()
 				if top && value && !strBody {
-					strBody, nest = true, brackets
+					strBody, nest = true, brackets+inner
 				}
 			}
 			if sg.kind != code {
@@ -468,16 +546,57 @@ func braceEnd(src *source, start, limit int, define bool) int {
 			}
 			for k := sg.from; k < sg.to; k++ {
 				c := line[k]
+				if opened { // in a block, or after one, only braces count
+					switch c {
+					case '{':
+						if depth == 0 && j == start {
+							body = k
+						}
+						depth++
+					case '}':
+						if depth--; depth != 0 {
+							break
+						}
+						switch {
+						case funcBody && nextByte(line, lx.segs, si, k+1) != '(':
+							// a function's body is the last of it, unless
+							// it's called right there: function (x) {…}(function () {
+							return j + 1, body
+						case blockFollows(line, lx.segs, si, k+1, value):
+							// it wasn't the body: func f() interface{} {
+						case goesOnAfterBlock(lines, j, base, restCode(line, lx.segs, si, k+1), lg, lx.in == comment, angle > 0 || tag, tag):
+							// nor here: it was in a type or in an expression
+							// that goes on (<T extends { id: string }>(, a
+							// union's | { … }, a chain's .map { … }), and
+							// what follows is read as before a block
+							opened, closed = false, j+1
+							for limit < len(lines) && limit <= j && len(later) > 0 {
+								limit, later = later[0].Line-1, later[1:]
+							}
+							if limit <= j {
+								limit = len(lines)
+							}
+						default:
+							return j + 1, body
+						}
+					}
+					continue
+				}
 				blank := c == ' ' || c == '\t'
 				if !blank {
 					lineEnd, endPrev = c, lineEnd
 				}
 				if strBody && c == '{' && nest <= 0 && (last == '>' && prev == '=' || !strings.ContainsRune("?:,([=|&!+-*/%^~<>", rune(last))) {
-					strBody = false // a block after all: the string was in a type (f = (a): T["k"] => {)
+					strBody, brackets, inner = false, 0, 0 // a block after all: the string was in a type (f = (a): T["k"] => {)
 				}
 				if !blank && c != '=' && c != '>' && !opened && parens == 0 && angle == 0 && inStmt && atValue() {
 					value = true
+					tag = tag || c == '<'
 				}
+				// a ( around an arrow function's object (=> ({ a: 1 })) or around
+				// the whole function (= ((a) => {): what's in it is the value
+				wraps := c == '(' && !opened && parens == 0 && !strBody && wrapsValue(line[k+1:], last, prev)
+				was := last // the code byte before this one
 				switch {
 				case blank:
 					gap = true
@@ -494,7 +613,7 @@ func braceEnd(src *source, start, limit int, define bool) int {
 						nest--
 					case ';':
 						if nest <= 0 {
-							return j + 1
+							return j + 1, body
 						}
 					}
 					continue
@@ -512,51 +631,240 @@ func braceEnd(src *source, start, limit int, define bool) int {
 						brackets++
 					case c == ']':
 						brackets--
+					case brackets > 0 && (c == '{' || c == '}' || c == ';'):
+						// in a type's brackets, not the body or the end:
+						// fn f() -> [u8; 4] {, func f[T interface{ M() }]() {
+						switch c {
+						case '{':
+							inner++
+						case '}':
+							inner--
+						}
+						continue
 					}
 				}
 				switch c {
 				case '(':
-					if !opened {
+					if wraps {
+						wrap++
+					} else {
 						parens++
 					}
 				case ')':
-					if !opened {
+					if parens == 0 && wrap > 0 {
+						wrap--
+					} else {
 						parens--
 					}
 				case '{':
-					depth++
-					opened = true
-				case '}':
-					depth--
-					if opened && depth == 0 {
-						return j + 1
+					if depth == 0 && j == start {
+						body = k
 					}
+					depth++
+					opened, funcBody = true, was == ')' && !value
+				case '}':
+					// the block the definition is in closes: it had none
+					// of its own (a declaration in a macro's braces)
+					return max(header+1, closed), body
 				case ';':
-					if !opened && depth == 0 {
-						return j + 1
+					if depth == 0 {
+						return j + 1, body
 					}
 				}
 			}
 		}
-		goesOn := strings.IndexByte(continuesAfter, lineEnd) >= 0 && (lineEnd != '>' || endPrev == '=') // a > ends a type, => goes on
-		ends := !lx.inText() && !goesOn && !nextContinues(lines, j)
+		if opened || lineEnd == 0 {
+			continue // how the line ends matters only before the block, and a line without code doesn't end
+		}
+		tail := codeEnd(line, lx.segs)
+		goesOn := strings.IndexByte(continuesAfter, lineEnd) >= 0 && (lineEnd != '>' || endPrev == '=') && // a > ends a type, => goes on
+			!((lineEnd == '+' || lineEnd == '-') && endPrev == lineEnd) && // and so does i++
+			// where a line can end a statement, value! and find()!! do, and
+			// Entity? in Kotlin; in JavaScript a ? is half a ?:
+			!(lg.noSemi && (lineEnd == '!' || lineEnd == '?' && !lg.asi)) ||
+			// if (x) / a / else / b: the line below a condition or an else is its branch
+			tail == "else" || lineEnd == ')' && lg.deeper && isCondition(restCode(line, lx.segs, 0, 0))
+		ends := !lx.inText() && !goesOn && !nextContinues(lines, j, base, lg, lx.in == comment, tail, angle > 0 || tag)
 		if strBody {
 			if ends && nest <= 0 && lineEnd != 0 { // a line of only a comment doesn't end it
-				return j + 1
+				return j + 1, body
 			}
 			continue
+		}
+		if ends && !opened && parens <= 0 && brackets <= 0 && wrap <= 0 && lineEnd != 0 && (value && lg.noSemi || lg.sameLine) && !headerGoesOn(lines, j, ctor, lg) {
+			// the expression ended without a block (fun f() = x), or the
+			// header did (type ID int): a block further down isn't its
+			return j + 1, body
 		}
 		if ends && !opened && parens <= 0 && angle <= 0 {
 			inStmt = false // the statement ended without a value: a later = isn't its
 		}
-		if !opened && j-start > 30 {
-			return start + 1
-		}
 	}
 	if opened || strBody {
-		return len(lines)
+		return len(lines), body
 	}
-	return start + 1
+	return giveUp()
+}
+
+// blockFollows reports whether the rest of a line, after a {…} that closed
+// at byte k-1 of its part si, opens another block of the same definition.
+// Then the one that closed wasn't the body: it was in a type
+// (func f() interface{} {, (): { ok: boolean } => {, -> Vec<{ N }> {) or
+// in an expression (= try { … } catch (e: E) {). The block isn't the
+// definition's when a statement ends before it (;), when two names follow
+// each other outside brackets, as a keyword and a name do where another
+// definition starts (} function next() {; the words in goesOnWith aside),
+// or at an = once the definition has its value: the next declarator
+// (}, g = () => {).
+func blockFollows(line string, segs []seg, si, k int, value bool) bool {
+	word := -1     // where the name the scan is in started, or -1
+	named := false // a name ended, and only blanks since
+	nest := 0      // the ( and [ open since the block closed: (x T) are parameters
+	var before byte
+	for ; si < len(segs); si, k = si+1, -1 {
+		sg := segs[si]
+		if sg.kind == comment {
+			continue
+		}
+		if sg.kind != code {
+			word, named, before = -1, false, '"'
+			continue
+		}
+		for i := max(k, sg.from); i < sg.to; i++ {
+			c := line[i]
+			switch {
+			case c == '{':
+				return true
+			case c == ';':
+				if nest <= 0 {
+					return false
+				}
+			case c == ' ' || c == '\t':
+				if word >= 0 {
+					named = nest <= 0 && !goesOnWith[line[word:i]]
+				}
+				word = -1
+			case isIdent(c) || c >= 0x80:
+				if named {
+					return false
+				}
+				if word < 0 {
+					word = i
+				}
+			default:
+				switch c {
+				case '(', '[':
+					nest++
+				case ')', ']':
+					nest--
+				case '=':
+					lone := !strings.ContainsRune("=!<>", rune(before)) && (i+1 >= sg.to || line[i+1] != '=' && line[i+1] != '>')
+					if lone && value && nest <= 0 {
+						return false
+					}
+				}
+				word, named = -1, false
+			}
+			before = c
+		}
+		word = -1 // a name doesn't go on in the next part
+	}
+	return false
+}
+
+// wrapsValue reports whether a ( that follows last and prev (see braceEnd)
+// and comes before rest is around a value, so that a { in it can be the
+// body: around the object an arrow function returns (=> ({ a: 1 }), but
+// not the parameters of a second one, => ({ a }) => a), or around a whole
+// arrow function (= ((a) => {, set: ((v) => {).
+func wrapsValue(rest string, last, prev byte) bool {
+	rest = strings.TrimLeft(rest, " \t")
+	switch {
+	case rest == "":
+		return false
+	case last == '>' && prev == '=':
+		if rest[0] != '{' {
+			return false
+		}
+		depth := 1 // the ( itself
+		for i := 0; i < len(rest); i++ {
+			switch rest[i] {
+			case '(', '[', '{':
+				depth++
+			case ')', ']', '}':
+				if depth--; depth == 0 {
+					return !strings.Contains(rest[i:], "=>")
+				}
+			}
+		}
+		return true
+	case last == ':' || last == '=' && !strings.ContainsRune("=!<>", rune(prev)):
+		return rest[0] == '('
+	}
+	return false
+}
+
+// headerGoesOn reports whether the next line of code goes on with the
+// definition although line j ended like a statement: with its block, on a
+// line of its own ({), its value (= x), or more of its header (where T : X,
+// and with ctor a class's private constructor(…)), also after its
+// annotations (@Inject, on that line or on lines of their own).
+func headerGoesOn(lines []string, j int, ctor bool, lg *lang) bool {
+	k, t := nextCode(lines, j, false, lg.nests)
+	annotated := false
+	for n := 0; k >= 0 && t[0] == '@' && n < 10; n++ { // a few annotations, not a file of them
+		if t, annotated = afterAnnotation(t), true; t == "" {
+			k, t = nextCode(lines, k, false, lg.nests)
+		}
+	}
+	if k < 0 {
+		return false
+	}
+	if ctor {
+		for _, m := range []string{"public ", "private ", "protected ", "internal "} {
+			t = strings.TrimPrefix(t, m)
+		}
+		if isWord(t, "constructor") {
+			return true
+		}
+	}
+	// an annotation is the next declaration's, unless a constructor follows it
+	return !annotated && (t[0] == '{' || t[0] == '=' && !strings.HasPrefix(t, "==") || isWord(t, "where"))
+}
+
+// afterAnnotation is what follows the annotation t starts with: @Inject,
+// @field:Json(name = "id").
+func afterAnnotation(t string) string {
+	i := 1
+	for i < len(t) && (isIdent(t[i]) || t[i] == '.' || t[i] == ':' || t[i] >= 0x80) {
+		i++
+	}
+	if i < len(t) && t[i] == '(' {
+		for depth := 0; i < len(t); i++ {
+			if t[i] == '(' {
+				depth++
+			} else if t[i] == ')' {
+				if depth--; depth == 0 {
+					i++
+					break
+				}
+			}
+		}
+	}
+	return strings.TrimLeft(t[i:], " \t")
+}
+
+// isWord reports whether t starts with the word w.
+func isWord(t, w string) bool {
+	return strings.HasPrefix(t, w) && (len(t) == len(w) || !isIdent(t[len(w)]))
+}
+
+// goesOnWith are the words that continue a definition after a block, with
+// a name right after them: } else if (x) {, <T extends { id: string }>
+// extends Base {, }): readonly T[] {, impl Tr<{ N }> for X {.
+var goesOnWith = map[string]bool{
+	"else": true, "if": true, "extends": true, "implements": true, "throws": true, "where": true,
+	"readonly": true, "keyof": true, "typeof": true, "asserts": true, "infer": true, "for": true,
 }
 
 // An expression goes on after a line that ends with one of these, or
@@ -566,15 +874,318 @@ const (
 	continuesBefore = "+-%&|^?:.,>"
 )
 
-func nextContinues(lines []string, j int) bool {
+// nextCode is the next line after j that has code on it, within ten
+// lines: its index and its text without the blanks around it, or -1.
+// Comments aren't code; inComment says that line j ends in one, and nests
+// that a comment in a comment has an end of its own (Kotlin's KDoc about
+// /* block */ comments goes on after that).
+func nextCode(lines []string, j int, inComment, nests bool) (int, string) {
+	depth := 0 // the comments that are open
+	if inComment {
+		depth = 1
+	}
 	for k := j + 1; k < len(lines) && k <= j+10; k++ {
 		t := strings.TrimSpace(lines[k])
-		if t == "" || strings.HasPrefix(t, "//") || strings.HasPrefix(t, "/*") || strings.HasPrefix(t, "*") {
-			continue // comment lines don't end it
+		switch {
+		case depth > 0:
+			depth = commentDepth(t, depth, nests)
+		case t == "" || strings.HasPrefix(t, "//"):
+		case strings.HasPrefix(t, "/*"):
+			depth = commentDepth(t[2:], 1, nests)
+		default:
+			return k, t
 		}
-		return strings.IndexByte(continuesBefore, t[0]) >= 0 || strings.HasPrefix(t, "else") && (len(t) == 4 || !isIdent(t[4]))
+	}
+	return -1, ""
+}
+
+// commentDepth is how many comments are open after t, with depth of them
+// open before it. What follows the last one's end on the line isn't looked
+// at.
+func commentDepth(t string, depth int, nests bool) int {
+	for i := 0; i+1 < len(t); i++ {
+		switch {
+		case t[i] == '*' && t[i+1] == '/':
+			if depth--; depth == 0 {
+				return 0
+			}
+			i++
+		case nests && t[i] == '/' && t[i+1] == '*':
+			depth++
+			i++
+		}
+	}
+	return depth
+}
+
+// continues reports whether a line that starts with t goes on with the
+// expression before it, with an operator: ...rest is the next element,
+// not a member, and ++i is a statement.
+func continues(t string) bool {
+	return strings.IndexByte(continuesBefore, t[0]) >= 0 && !strings.HasPrefix(t, "...") && !strings.HasPrefix(t, "++") && !strings.HasPrefix(t, "--")
+}
+
+// carriesOn reports whether line k, whose text without the blanks around
+// it is t, goes on with the statement of a definition indented by base by
+// how it starts: with an operator, wherever it is (tabs and blanks mix),
+// or with an else that isn't further out than the definition (that one
+// belongs to an if around it). In JavaScript else can be a member's name:
+// else() {, else = () => {. In a JSX element (tag) its end carries on too:
+// />, </Row>.
+func carriesOn(lines []string, k int, t string, base int, lg *lang, tag bool) bool {
+	if !isWord(t, "else") {
+		return continues(t) || tag && (strings.HasPrefix(t, "/>") || strings.HasPrefix(t, "</"))
+	}
+	rest := strings.TrimLeft(t[len("else"):], " \t")
+	return indentOf(lines[k]) >= base && !(lg.asi && rest != "" && strings.IndexByte("(=:?<;,", rest[0]) >= 0)
+}
+
+// goesOnIn reports whether the statement of a definition indented by base
+// goes on in line k after code that ends with tail (see codeEnd): by how
+// the line starts (carriesOn) or by its indentation (isDeeper).
+func goesOnIn(lines []string, k int, t string, base int, lg *lang, tail string, generics bool) bool {
+	return carriesOn(lines, k, t, base, lg, generics) || !isWord(t, "else") && isDeeper(lines, k, t, base, lg, tail, generics)
+}
+
+// isDeeper reports whether line k goes on with the statement of a
+// definition indented by base because it is indented more, as the lines
+// of a statement are and the next statement isn't (where lg.deeper says
+// so). It doesn't when it starts a statement (a keyword does that also
+// where its indentation is off), or when two values would meet at the
+// break (lg.asi). In generics and in a JSX element (generics) there are
+// no statements: const T, the attributes of <Row.
+func isDeeper(lines []string, k int, t string, base int, lg *lang, tail string, generics bool) bool {
+	if !lg.deeper || indentOf(lines[k]) <= base {
+		return false
+	}
+	return generics || !startsStatement(t) && !(lg.asi && isValue(tail, true) && isValue(t, false))
+}
+
+// nextContinues reports whether the next line of code goes on with the
+// statement of a definition indented by base (see goesOnIn).
+func nextContinues(lines []string, j, base int, lg *lang, inComment bool, tail string, generics bool) bool {
+	k, t := nextCode(lines, j, inComment, lg.nests)
+	return k >= 0 && goesOnIn(lines, k, t, base, lg, tail, generics)
+}
+
+// isCondition reports whether a line's code is the head of a statement
+// whose body is the next line: if (x), } else if (x), for (…), while (…)
+// with nothing after the ).
+func isCondition(code string) bool {
+	t := strings.TrimLeft(strings.TrimPrefix(strings.TrimSpace(code), "}"), " \t")
+	if isWord(t, "else") {
+		t = strings.TrimLeft(t[len("else"):], " \t")
+	}
+	for _, w := range []string{"if", "for", "while"} {
+		if isWord(t, w) {
+			t = strings.TrimLeft(t[len(w):], " \t")
+			if t == "" || t[0] != '(' {
+				return false
+			}
+			for i, depth := 0, 0; i < len(t); i++ {
+				switch t[i] {
+				case '(':
+					depth++
+				case ')':
+					if depth--; depth == 0 {
+						return strings.TrimSpace(t[i+1:]) == ""
+					}
+				}
+			}
+		}
 	}
 	return false
+}
+
+// statementWords start a statement or a declaration, never the next line
+// of an expression.
+var statementWords = map[string]bool{
+	"export": true, "import": true, "package": true, "interface": true, "class": true, "object": true, "enum": true,
+	"const": true, "let": true, "var": true, "val": true, "fun": true, "function": true, "def": true, "type": true,
+	"typealias": true, "declare": true, "namespace": true, "abstract": true, "private": true, "public": true,
+	"protected": true, "internal": true, "override": true, "open": true, "sealed": true, "data": true, "companion": true,
+	"static": true, "final": true, "lazy": true, "implicit": true, "trait": true, "case": true, "return": true,
+	"throw": true, "if": true, "for": true, "while": true, "do": true, "switch": true, "try": true,
+}
+
+// modifierWords start a declaration when a name follows: readonly zone,
+// suspend fun, get size(). They are names themselves otherwise (get(x)).
+var modifierWords = map[string]bool{
+	"readonly": true, "async": true, "get": true, "set": true, "accessor": true, "suspend": true, "lateinit": true,
+	"inline": true, "operator": true, "infix": true, "tailrec": true, "inner": true, "external": true, "expect": true,
+	"actual": true, "annotation": true, "given": true,
+}
+
+// startsStatement reports whether a line that starts with t starts a
+// statement or a declaration: with one of statementWords and something
+// after it that isn't an operator (type is a name in type === "a"), or
+// with an annotation.
+func startsStatement(t string) bool {
+	if t[0] == '@' {
+		return true
+	}
+	i := 0
+	for i < len(t) && isIdent(t[i]) {
+		i++
+	}
+	rest := strings.TrimLeft(t[i:], " \t")
+	if modifierWords[t[:i]] {
+		return len(rest) < len(t[i:]) && (isIdent(rest[0]) || rest[0] >= 0x80)
+	}
+	if !statementWords[t[:i]] {
+		return false
+	}
+	return rest == "" || isIdent(rest[0]) || rest[0] >= 0x80 || strings.IndexByte("({[<*\"'`@", rest[0]) >= 0 && t[:i] != "type"
+}
+
+// Operators spelled as words. Code that starts with one of joinWords goes
+// on with the value before it, and code that ends with one of them or of
+// wantWords isn't a value yet. (void isn't here: at the end of a line
+// it's a type.)
+var (
+	joinWords = map[string]bool{
+		"in": true, "of": true, "instanceof": true, "as": true, "satisfies": true, "is": true, "extends": true,
+		"implements": true,
+	}
+	wantWords = map[string]bool{
+		"typeof": true, "keyof": true, "infer": true, "readonly": true, "asserts": true, "new": true, "await": true,
+		"yield": true, "delete": true, "return": true, "throw": true, "else": true, "case": true, "default": true,
+		"abstract": true,
+	}
+)
+
+// isValue reports whether code that ends with t (at its end), or that
+// starts with t, is a value there: a name, a number, a string, or what a
+// bracket closes (opens: only a {, since ( and [ and a template call or
+// index the value before them), and at the start what !, ~, ++ and --
+// are put before. Two values with nothing between them aren't one
+// expression.
+func isValue(t string, end bool) bool {
+	if t == "" {
+		return false
+	}
+	c := t[0]
+	if end {
+		c = t[len(t)-1]
+	}
+	switch {
+	case isIdent(c) || c >= 0x80:
+		i, j := 0, len(t)
+		if end {
+			for i = len(t); i > 0 && (isIdent(t[i-1]) || t[i-1] >= 0x80); i-- {
+			}
+		} else {
+			for j = 0; j < len(t) && (isIdent(t[j]) || t[j] >= 0x80); j++ {
+			}
+		}
+		return !joinWords[t[i:j]] && !(end && wantWords[t[i:j]])
+	case c == '"' || c == '\'':
+		return true
+	case end:
+		return c == ')' || c == ']' || c == '}' || c == '`'
+	}
+	return c == '{' || c == '#' || c == '~' || c == '!' && !strings.HasPrefix(t, "!=") ||
+		strings.HasPrefix(t, "++") || strings.HasPrefix(t, "--")
+}
+
+// codeEnd is how the code of a line ends: its last word, or its last byte
+// when that isn't part of one, " for a string, and "" when it has none.
+func codeEnd(line string, segs []seg) string {
+	for si := len(segs) - 1; si >= 0; si-- {
+		sg := segs[si]
+		switch sg.kind {
+		case comment:
+			continue
+		case str:
+			return `"`
+		}
+		t := strings.TrimRight(line[sg.from:sg.to], " \t")
+		if t == "" {
+			continue
+		}
+		i := len(t)
+		for i > 0 && (isIdent(t[i-1]) || t[i-1] >= 0x80) {
+			i--
+		}
+		if i == len(t) {
+			i--
+		}
+		return t[i:]
+	}
+	return ""
+}
+
+// goesOnAfterBlock reports whether a definition indented by base goes on
+// after a {…} that closed on line j, with rest after it on the line. It
+// doesn't when a statement ends or another block opens in rest. It does
+// when the header went on after the block (Foo<{ N }>, more than a comma)
+// and the next line starts the body or more of it ({, where, for X). Where
+// statements end without a semicolon (lg.noSemi), it also does on a next
+// line that closes the generics the block was in (>), that is indented
+// more (see isDeeper; in generics, whatever it starts with: const T) or
+// that starts with an operator; after a comma, though, a line that isn't
+// indented more is the next element. In a JSX element (tag) another block
+// on the line is the next attribute's: <Row a={1} b={2} />.
+func goesOnAfterBlock(lines []string, j, base int, rest string, lg *lang, inComment, generics, tag bool) bool {
+	if strings.ContainsAny(rest, "{;") {
+		return tag // what follows on the line is read as before a block, its ; too
+	}
+	k, t := nextCode(lines, j, inComment, lg.nests)
+	if k < 0 {
+		return false
+	}
+	if lg.noSemi {
+		tail := strings.TrimRight(rest, " \t")
+		if tail == "" {
+			tail = "}"
+		}
+		if lg.deeper && (isCondition(rest) || strings.TrimSpace(rest) == "else") {
+			return true // } else if (x) / a: the line below is the branch
+		}
+		after := strings.Contains(rest, ",") || t[0] == ','
+		if t[0] == '>' || !isWord(t, "else") && isDeeper(lines, k, t, base, lg, tail, generics) || !after && carriesOn(lines, k, t, base, lg, generics) {
+			return true
+		}
+	}
+	return strings.Trim(rest, " \t,") != "" && (t[0] == '{' || isWord(t, "where") || isWord(t, "for"))
+}
+
+// restCode is the code in the rest of a line, from byte k of its part si.
+func restCode(line string, segs []seg, si, k int) string {
+	var b strings.Builder
+	for ; si < len(segs); si, k = si+1, -1 {
+		if sg := segs[si]; sg.kind == code {
+			b.WriteString(line[max(k, sg.from):sg.to])
+		}
+	}
+	return b.String()
+}
+
+// nextByte is the first byte of code in the rest of a line, from byte k of
+// its part si, that isn't blank: '"' for a string, 0 when there is none.
+func nextByte(line string, segs []seg, si, k int) byte {
+	for ; si < len(segs); si, k = si+1, -1 {
+		switch sg := segs[si]; sg.kind {
+		case str:
+			return '"'
+		case code:
+			for i := max(k, sg.from); i < sg.to; i++ {
+				if line[i] != ' ' && line[i] != '\t' {
+					return line[i]
+				}
+			}
+		}
+	}
+	return 0
+}
+
+// inside reports whether a line can be within the brackets of a
+// definition indented by base: it is indented more, closes a bracket, or
+// has no code.
+func inside(line string, base int) bool {
+	t := strings.TrimSpace(line)
+	return t == "" || indentOf(line) > base || strings.IndexByte(")]}>", t[0]) >= 0 ||
+		strings.HasPrefix(t, "//") || strings.HasPrefix(t, "/*") || strings.HasPrefix(t, "*")
 }
 
 // indentEnd: the block ends before the next non-blank line that is
