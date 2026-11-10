@@ -174,8 +174,19 @@ func TestMultilineLongLines(t *testing.T) {
 			t.Errorf("%s %q: 500 repeats took %v, 8000 took %v", c.name, c.unit, ts, tb)
 		}
 	}
+	// one definition with many blocks on its line
+	for _, c := range []struct{ name, head, unit string }{
+		{"a.ts", "type T = ", "{} | "},
+		{"a.ts", "type T = ", "{ a: 1 } & "},
+		{"a.js", "function f() {", "}(function () {"},
+	} {
+		ts, tb := fastest(c.name, c.head+strings.Repeat(c.unit, 500)), fastest(c.name, c.head+strings.Repeat(c.unit, 8000))
+		if tb > 64*ts+5*time.Millisecond {
+			t.Errorf("%s %q: 500 repeats took %v, 8000 took %v", c.name, c.head+c.unit, ts, tb)
+		}
+	}
 	// many lines: heredocs without an end, siblings in one block,
-	// definitions whose brackets never close
+	// definitions whose brackets never close, annotations all the way down
 	for _, c := range []struct{ name, head, line, tail string }{
 		{"a.sh", "", "f%d() { cat <<T%d; }\n", ""},
 		{"a.rb", "", "def f%d; x <<T%d; end\n", ""},
@@ -183,6 +194,7 @@ func TestMultilineLongLines(t *testing.T) {
 		{"a.js", "", "function f%d() { // %d\n", ""},
 		{"a.ts", "", "export const a%d = () => [\"x\", %d,\n", ""},
 		{"a.rs", "", "pub static A%d: &[&str] = &[\"x\", \"%d\",\n", ""},
+		{"a.kt", "", "/**/class A%d\n@X%d\n", ""},
 	} {
 		lines := func(n int) string {
 			var b strings.Builder

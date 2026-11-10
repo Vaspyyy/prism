@@ -124,3 +124,55 @@ func TestEndsFoundInTheSecondReview(t *testing.T) {
 		}
 	}
 }
+
+// What the re-check of those fixes found.
+var thirdReview = []struct{ name, src, want string }{
+	// a JSX element without parentheses around it: its attributes and children aren't statements
+	{"jsx.tsx", "const Row = ({ item }) =>\n  <Line\n    index={item.index}\n    text={item.text}\n  />\nconst next = () => 1\n", "const Row 1-5; const next 6-6"},
+	{"frag.tsx", "const Row = () =>\n  <>\n    {a}\n    {b}\n  </>\nconst next = () => 1\n", "const Row 1-5; const next 6-6"},
+	{"tag.jsx", "const Row = ({ item }) => <Line\n  index={item.index}\n  text={item.text}\n/>\nconst next = () => 1\n", "const Row 1-4; const next 5-5"},
+	{"text.jsx", "const Row = () => <div\n  className=\"x\"\n>\n  text\n</div>\nconst next = () => 1\n", "const Row 1-5; const next 6-6"},
+	{"attrs.tsx", "const Card = (id: string) =>\n  <Box>\n    <Orb look={look} compact theme={id} />\n    {on ? (\n      <Mark />\n    ) : null}\n  </Box>\n\nconst next = () => 1\n", "const Card 1-7; const next 9-9"},
+	// ... but a type before a value starts with < too
+	{"assert.ts", "const make = () => <Foo>{\n  a: 1,\n}\nrun(make())\n", "const make 1-3"},
+	// ... and </script> isn't the end of one
+	{"page.vue", "<script>\nconst one = () => 1\n</script>\n", "const one 2-2"},
+	// a line that starts with an operator goes on wherever it is: tabs and blanks mix
+	{"tabs.ts", "function outer() {\n\t\t\tconst deploy = (port?: number) =>\n        stack\n          .deploy(port)\n          .pipe(provide);\n\t\t\treturn deploy;\n}\n", "function outer 1-7; const outer.deploy 2-5"},
+	// the line below a condition is its branch, whatever it starts with
+	{"branch.kt", "fun check(x: Int): Int =\n    if (x < 0)\n        throw IllegalArgumentException(\"x\")\n    else\n        x\n\nfun after() = 1\n", "fun check 1-5; fun after 7-7"},
+	{"branch.scala", "object M {\n    private def check(x: Int): Int =\n        if (x < 0)\n            throw new IllegalArgumentException(\"x\")\n        else\n            x\n\n    private def one(): Int = 1\n}\n", "object M 1-9; method M.check 2-6; method M.one 8-8"},
+	{"cond.kt", "class A {\n    fun f(x: Int) =\n        if (x > 0) g(x)\n    fun after() = 1\n}\n", "class A 1-5; fun A.f 2-3; fun A.after 4-4"},
+	{"elseif.kt", "class A {\n    fun sign(x: Int) = if (x > 0) {\n        1\n    } else if (x < 0)\n        throw X()\n    else\n        0\n\n    fun after() = 1\n}\n", "class A 1-10; fun A.sign 2-7; fun A.after 9-9"},
+	{"elsebranch.kt", "class A {\n    fun pick(x: Int) = if (x > 0) {\n        1\n    } else\n        return 0\n\n    fun after() = 1\n}\n", "class A 1-8; fun A.pick 2-5; fun A.after 7-7"},
+	// a value starts with await, new or !, and a declaration with a modifier
+	{"await.js", "const noop = () => undefined\n  await doSomething()\nconst next = () => 1\n", "const noop 1-1; const next 3-3"},
+	{"not.js", "const noop = () => undefined\n  !done && finish()\nconst next = () => 1\n", "const noop 1-1; const next 3-3"},
+	{"incr.js", "const noop = () => undefined\n  ++count\nconst next = () => 1\n", "const noop 1-1; const next 3-3"},
+	{"member.ts", "class Clock {\n  now(): number {\n    return Date.now()\n  }\n    readonly zone = \"utc\"\n  other = 1\n}\n", "class Clock 1-7; method Clock.now 2-4"},
+	{"suspend.kt", "interface A {\n    fun a(): Int\n      // sloppy\n      suspend fun x(): Int\n    fun b(): Int\n}\n", "interface A 1-6; fun A.a 2-2; fun A.b 5-5"},
+	// ... but inner( is a call, and as goes on with the value
+	{"infix.kt", "fun flags() = a or\n    inner(b)\nfun after() = 1\n", "fun flags 1-2; fun after 3-3"},
+	{"as.ts", "const pick = (a: unknown) => a\n  as string\nconst next = () => 1\n", "const pick 1-2; const next 3-3"},
+	// ... and a type can end in abstract, which wants its new
+	{"ctor.ts", "type Ctor = abstract\n  new () => object\ntype Next = 1\n", "type Ctor 1-2; type Next 3-3"},
+	// a comment in a Kotlin comment has its own end
+	{"kdoc.kt", "fun a(x: Int): Int = x\n\n/**\n * Strips /* block */ comments.\n * Then more text.\n */\n@Test\nfun b(): Int = 1\n", "fun a 1-1; fun b 8-8"},
+	{"nonest.js", "const f = (a) => a\n/* a comment about /* */\n  .then(b)\nconst next = () => 1\n", "const f 1-3; const next 4-4"},
+	// else ( is an else in Kotlin, and else = a member in JavaScript
+	{"else.kt", "class A {\n    fun f(x: Int) = if (x > 0) x\n    else (x + 1)\n}\n", "class A 1-4; fun A.f 2-3"},
+	{"elseprop.ts", "class Cond {\n  then(): this {\n    return this\n  }\n  else = (): this => {\n    return this\n  }\n  other = 1\n}\n", "class Cond 1-9; method Cond.then 2-4"},
+	// an else further out is the else of an if around the definition
+	{"outer.js", "if (typeof define === \"function\")\n  exports.make = () => {\n    return 1\n  }\nelse\n  exports.make = () => {\n    return 2\n  }\n", "function exports.make 2-4; function exports.make 6-8"},
+	{"outer2.js", "if (a)\n  var f = (x) =>\n    x + 1\nelse\n  var g = 2\n", "const f 2-3"},
+	// an annotation belongs to what follows it, unless that's a constructor
+	{"annot.kt", "object Marker\n\n@OptIn(X::class) {\n    1\n}\n", "object Marker 1-1"},
+}
+
+func TestEndsFoundInTheThirdReview(t *testing.T) {
+	for _, c := range thirdReview {
+		if got := spans(c.name, c.src); got != c.want {
+			t.Errorf("%s:\n got  %s\n want %s", c.name, got, c.want)
+		}
+	}
+}
