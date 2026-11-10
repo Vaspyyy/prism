@@ -127,6 +127,9 @@ type lang struct {
 	// style have it, so a declaration that ends its line without one has
 	// none (headerGoesOn has the exceptions)
 	sameLine bool
+	// a statement may end without a semicolon, so a value ends with its
+	// line unless something says it goes on
+	noSemi bool
 }
 
 var (
@@ -137,7 +140,7 @@ var (
 	rustRules = prepare([]rule{
 		r("", `^\s*(?:pub(?:\([^)]*\))? )?(?:async )?(?:unsafe )?(?:const )?(fn|struct|enum|trait|mod|type|union|static|macro_rules!) (\w+)`),
 		// also impls nested in mod tests or a function; tuple and array types in the generics
-		r("impl", `^\s*impl(?:<[^>]*>)? ([\w:<>, '&()\[\];]+?)(?: \{|$| where)`),
+		r("impl", `^\s*impl(?:<[^>]*>)? ([\w:<>, '&()\[\];]*?[\w>)\]])(?: \{|$| where)`),
 	})
 	pyRules = prepare([]rule{
 		r("", `^\s*(?:async )?(def|class) ([\p{L}_][\p{L}\p{N}_]*)`), // also nested helpers and classes
@@ -180,13 +183,13 @@ var (
 )
 
 var (
-	goLang   = lang{rules: goRules, sameLine: true}
+	goLang   = lang{rules: goRules, sameLine: true, noSemi: true}
 	rustLang = lang{rules: rustRules}
 	pyLang   = lang{rules: pyRules, style: indent}
-	jsLang   = lang{rules: jsRules}
+	jsLang   = lang{rules: jsRules, noSemi: true}
 	cLang    = lang{rules: cRules}
 	javaLang = lang{rules: javaRules}
-	ktLang   = lang{rules: javaRules, sameLine: true}
+	ktLang   = lang{rules: javaRules, sameLine: true, noSemi: true}
 	gdLang   = lang{rules: gdRules, style: indent}
 	shLang   = lang{rules: shRules}
 	luaLang  = lang{rules: luaRules, style: keyword}
@@ -421,9 +424,9 @@ func findEnds(lg *lang, src *source, text []bool, syms []Symbol) {
 				limit = syms[k+1].Line - 1
 			}
 			var body int
-			s.End, body = braceEnd(src, s.Line-1, limit, s.Kind == "define", lg.sameLine)
-			if body > 0 && strings.IndexByte(lines[s.Line-1][:body], '{') >= 0 {
-				s.Sig = sigBefore(src, s.Line-1, body)
+			s.End, body = braceEnd(src, s.Line-1, limit, s.Kind, lg, syms[k+1:])
+			if body > 0 && s.End > s.Line && strings.IndexByte(lines[s.Line-1][:body], '{') >= 0 {
+				s.Sig = sigBefore(src, s.Line-1, body) // the block that goes on is the body, not the first on the line
 			}
 		case indent, keyword:
 			s.End = indentEnd(lines, text, s.Line-1, lg.style == keyword)
@@ -446,13 +449,14 @@ func findEnds(lg *lang, src *source, text []bool, syms []Symbol) {
 // opened on or after line start (0-based). A declaration without a block
 // (`type ID int`, `fn f();`) ends on its own line, and one whose value is
 // an expression (fun f() = x, const f = () => `…`) where that expression
-// ends. With sameLine, the block opens on the line its header ends on.
-// body is where the block's { is on the definition's own line, or -1 when
-// it isn't there.
-func braceEnd(src *source, start, limit int, define, sameLine bool) (end, body int) {
+// ends. With lg.sameLine, the block opens on the line its header ends on.
+// later are the definitions after this one: its block opens before the
+// next of them, unless that one is inside its brackets. body is where the
+// block's { is on the definition's own line, or -1 when it isn't there.
+func braceEnd(src *source, start, limit int, kind string, lg *lang, later []Symbol) (end, body int) {
 	lines := src.lines
 	body = -1
-	if define { // #define with continuation lines
+	if kind == "define" { // #define with continuation lines
 		j := start
 		for j+1 < len(lines) && strings.HasSuffix(strings.TrimRight(lines[j], " \t"), "\\") {
 			j++
@@ -460,6 +464,9 @@ func braceEnd(src *source, start, limit int, define, sameLine bool) (end, body i
 		return j + 1, body
 	}
 	lx := newLexer(src) // the definition's line starts in code
+	base := indentOf(lines[start])
+	// a Kotlin class's constructor can follow on a line of its own
+	ctor := lg.sameLine && (kind == "class" || kind == "enum" || kind == "interface" || kind == "object")
 	depth, opened, parens := 0, false, 0
 	var last, prev byte      // the last code byte that isn't blank, and the one right before it (or ' ')
 	inStmt, angle := true, 0 // still in the definition's statement; inside <generics>
@@ -468,22 +475,42 @@ func braceEnd(src *source, start, limit int, define, sameLine bool) (end, body i
 	// where that expression does, at a ; or at a line that the next doesn't
 	// continue, with its brackets closed.
 	value, strBody, nest, brackets := false, false, 0, 0
+	inner := 0               // the { open in a type's brackets, which aren't blocks
 	wrap := 0                // the ( open around the value, which aren't parameters: = ((a) => {
+	funcBody := false        // the block that is open follows a parameter list: f() {
+	closed := 0              // the line a block closed on that the definition went on after, or 0
+	header := start          // the last line that started in the header's brackets
 	atValue := func() bool { // right after = or =>
 		return last == '=' && !strings.ContainsRune("=!<>", rune(prev)) || last == '>' && prev == '='
 	}
+	giveUp := func() (int, int) { // no block, or no end, was found
+		if closed > 0 {
+			return closed, body
+		}
+		return start + 1, body
+	}
 	for j := start; j < len(lines); j++ {
-		if !opened && j >= limit && j > start {
+		// The block opens before the next definition, and within 30 lines
+		// of the definition's line or of the last block of its header.
+		// What's inside the definition's brackets is neither: the functions
+		// in a call (= Effect.gen(function* () {), a long table (= &[).
+		if !opened && j > start && (j >= limit || j-max(start, closed-1) > 31) {
 			switch {
 			case strBody && nest > 0: // definitions in the value's brackets ({ f: function() {…} })
 			case strBody:
-				return j, body // the line before the next definition
+				if j >= limit {
+					return j, body // the line before the next definition
+				}
+			case (parens > 0 || brackets > 0) && inside(lines[j], base):
 			default:
-				return start + 1, body
+				return giveUp()
 			}
 		}
 		if src.endBudget -= len(lines[j]) + 1; src.endBudget < 0 {
 			break // as if the file ended here
+		}
+		if !opened && (parens > 0 || brackets > 0 || wrap > 0) {
+			header = j
 		}
 		lx.scan(j)
 		line := lines[j]
@@ -495,7 +522,7 @@ func braceEnd(src *source, start, limit int, define, sameLine bool) (end, body i
 				top := !opened && parens == 0 && angle == 0 && inStmt
 				value = value || top && atValue()
 				if top && value && !strBody {
-					strBody, nest = true, brackets
+					strBody, nest = true, brackets+inner
 				}
 			}
 			if sg.kind != code {
@@ -511,10 +538,27 @@ func braceEnd(src *source, start, limit int, define, sameLine bool) (end, body i
 						}
 						depth++
 					case '}':
-						if depth--; depth == 0 {
-							if blockFollows(line, lx.segs, si, k+1, value) {
-								continue // it wasn't the body: func f() interface{} {
+						if depth--; depth != 0 {
+							break
+						}
+						switch {
+						case funcBody:
+							return j + 1, body // a function's body is the last of it
+						case blockFollows(line, lx.segs, si, k+1, value):
+							// it wasn't the body: func f() interface{} {
+						case goesOnAfterBlock(lines, j, base, restCode(line, lx.segs, si, k+1), lg.noSemi):
+							// nor here: it was in a type or in an expression
+							// that goes on (<T extends { id: string }>(, a
+							// union's | { … }, a chain's .map { … }), and
+							// what follows is read as before a block
+							opened, closed = false, j+1
+							for limit < len(lines) && limit <= j && len(later) > 0 {
+								limit, later = later[0].Line-1, later[1:]
 							}
+							if limit <= j {
+								limit = len(lines)
+							}
+						default:
 							return j + 1, body
 						}
 					}
@@ -525,7 +569,7 @@ func braceEnd(src *source, start, limit int, define, sameLine bool) (end, body i
 					lineEnd, endPrev = c, lineEnd
 				}
 				if strBody && c == '{' && nest <= 0 && (last == '>' && prev == '=' || !strings.ContainsRune("?:,([=|&!+-*/%^~<>", rune(last))) {
-					strBody, brackets = false, 0 // a block after all: the string was in a type (f = (a): T["k"] => {)
+					strBody, brackets, inner = false, 0, 0 // a block after all: the string was in a type (f = (a): T["k"] => {)
 				}
 				if !blank && c != '=' && c != '>' && !opened && parens == 0 && angle == 0 && inStmt && atValue() {
 					value = true
@@ -533,6 +577,7 @@ func braceEnd(src *source, start, limit int, define, sameLine bool) (end, body i
 				// a ( around an arrow function's object (=> ({ a: 1 })) or around
 				// the whole function (= ((a) => {): what's in it is the value
 				wraps := c == '(' && !opened && parens == 0 && !strBody && wrapsValue(line[k+1:], last, prev)
+				was := last // the code byte before this one
 				switch {
 				case blank:
 					gap = true
@@ -570,6 +615,12 @@ func braceEnd(src *source, start, limit int, define, sameLine bool) (end, body i
 					case brackets > 0 && (c == '{' || c == '}' || c == ';'):
 						// in a type's brackets, not the body or the end:
 						// fn f() -> [u8; 4] {, func f[T interface{ M() }]() {
+						switch c {
+						case '{':
+							inner++
+						case '}':
+							inner--
+						}
 						continue
 					}
 				}
@@ -591,9 +642,11 @@ func braceEnd(src *source, start, limit int, define, sameLine bool) (end, body i
 						body = k
 					}
 					depth++
-					opened = true
+					opened, funcBody = true, was == ')' && !value
 				case '}':
-					depth--
+					// the block the definition is in closes: it had none
+					// of its own (a declaration in a macro's braces)
+					return max(header+1, closed), body
 				case ';':
 					if depth == 0 {
 						return j + 1, body
@@ -601,16 +654,20 @@ func braceEnd(src *source, start, limit int, define, sameLine bool) (end, body i
 				}
 			}
 		}
+		if opened {
+			continue // how the line ends matters only before the block
+		}
 		goesOn := strings.IndexByte(continuesAfter, lineEnd) >= 0 && (lineEnd != '>' || endPrev == '=') && // a > ends a type, => goes on
-			!((lineEnd == '+' || lineEnd == '-') && endPrev == lineEnd) // and so does i++
-		ends := !lx.inText() && !goesOn && !nextContinues(lines, j)
+			!((lineEnd == '+' || lineEnd == '-') && endPrev == lineEnd) && // and so does i++
+			!(lg.noSemi && (lineEnd == '?' || lineEnd == '!')) // and Entity? and find()!! more often than half a ?: does
+		ends := !lx.inText() && !goesOn && !nextContinues(lines, j, base, lg.noSemi)
 		if strBody {
 			if ends && nest <= 0 && lineEnd != 0 { // a line of only a comment doesn't end it
 				return j + 1, body
 			}
 			continue
 		}
-		if ends && !opened && parens <= 0 && brackets <= 0 && wrap <= 0 && lineEnd != 0 && (value || sameLine) && !headerGoesOn(lines, j) {
+		if ends && !opened && parens <= 0 && brackets <= 0 && wrap <= 0 && lineEnd != 0 && (value && lg.noSemi || lg.sameLine) && !headerGoesOn(lines, j, ctor) {
 			// the expression ended without a block (fun f() = x), or the
 			// header did (type ID int): a block further down isn't its
 			return j + 1, body
@@ -618,14 +675,11 @@ func braceEnd(src *source, start, limit int, define, sameLine bool) (end, body i
 		if ends && !opened && parens <= 0 && angle <= 0 {
 			inStmt = false // the statement ended without a value: a later = isn't its
 		}
-		if !opened && j-start > 30 {
-			return start + 1, body
-		}
 	}
 	if opened || strBody {
 		return len(lines), body
 	}
-	return start + 1, body
+	return giveUp()
 }
 
 // blockFollows reports whether the rest of a line, after a {…} that closed
@@ -658,7 +712,9 @@ func blockFollows(line string, segs []seg, si, k int, value bool) bool {
 			case c == '{':
 				return true
 			case c == ';':
-				return false
+				if nest <= 0 {
+					return false
+				}
 			case c == ' ' || c == '\t':
 				if word >= 0 {
 					named = nest <= 0 && !goesOnWith[line[word:i]]
@@ -727,28 +783,36 @@ func wrapsValue(rest string, last, prev byte) bool {
 // headerGoesOn reports whether the next line of code goes on with the
 // definition although line j ended like a statement: with its block, on a
 // line of its own ({), its value (= x), or more of its header (where T : X,
-// private constructor(…), also after its annotations).
-func headerGoesOn(lines []string, j int) bool {
-	for k := j + 1; k < len(lines) && k <= j+10; k++ {
-		t := strings.TrimSpace(lines[k])
-		if t == "" || strings.HasPrefix(t, "//") || strings.HasPrefix(t, "/*") || strings.HasPrefix(t, "*") {
-			continue
+// and with ctor a class's private constructor(…)), also after its
+// annotations.
+func headerGoesOn(lines []string, j int, ctor bool) bool {
+	k, t := nextCode(lines, j, true)
+	if k < 0 {
+		return false
+	}
+	if ctor {
+		for _, m := range []string{"public ", "private ", "protected ", "internal "} {
+			t = strings.TrimPrefix(t, m)
 		}
-		if i := strings.Index(t, "constructor"); i >= 0 && (i == 0 || !isIdent(t[i-1])) && (i+11 == len(t) || !isIdent(t[i+11])) {
+		if isWord(t, "constructor") {
 			return true
 		}
-		if t[0] == '@' {
-			continue // an annotation of what the line after it declares
-		}
-		return t[0] == '{' || t[0] == '=' && !strings.HasPrefix(t, "==") || strings.HasPrefix(t, "where") && (len(t) == 5 || !isIdent(t[5]))
 	}
-	return false
+	return t[0] == '{' || t[0] == '=' && !strings.HasPrefix(t, "==") || isWord(t, "where")
+}
+
+// isWord reports whether t starts with the word w.
+func isWord(t, w string) bool {
+	return strings.HasPrefix(t, w) && (len(t) == len(w) || !isIdent(t[len(w)]))
 }
 
 // goesOnWith are the words that continue a definition after a block, with
 // a name right after them: } else if (x) {, <T extends { id: string }>
-// extends Base {.
-var goesOnWith = map[string]bool{"else": true, "extends": true, "implements": true, "throws": true, "where": true}
+// extends Base {, }): readonly T[] {.
+var goesOnWith = map[string]bool{
+	"else": true, "if": true, "extends": true, "implements": true, "throws": true, "where": true,
+	"readonly": true, "keyof": true, "typeof": true, "asserts": true, "infer": true,
+}
 
 // An expression goes on after a line that ends with one of these, or
 // when the next line starts with one of continuesBefore.
@@ -757,15 +821,86 @@ const (
 	continuesBefore = "+-%&|^?:.,>"
 )
 
-func nextContinues(lines []string, j int) bool {
+// nextCode is the next line after j that has code on it, within ten
+// lines: its index and its text without the blanks around it, or -1.
+// Comments aren't code, and with annots neither are the annotations of
+// what the line after them declares (@Inject).
+func nextCode(lines []string, j int, annots bool) (int, string) {
+	inComment := false
 	for k := j + 1; k < len(lines) && k <= j+10; k++ {
 		t := strings.TrimSpace(lines[k])
-		if t == "" || strings.HasPrefix(t, "//") || strings.HasPrefix(t, "/*") || strings.HasPrefix(t, "*") {
-			continue // comment lines don't end it
+		switch {
+		case inComment:
+			inComment = !strings.Contains(t, "*/")
+		case t == "" || strings.HasPrefix(t, "//") || strings.HasPrefix(t, "*") || annots && t[0] == '@':
+		case strings.HasPrefix(t, "/*"):
+			inComment = !strings.Contains(t[2:], "*/")
+		default:
+			return k, t
 		}
-		return strings.IndexByte(continuesBefore, t[0]) >= 0 || strings.HasPrefix(t, "else") && (len(t) == 4 || !isIdent(t[4]))
 	}
-	return false
+	return -1, ""
+}
+
+// continues reports whether a line that starts with t goes on with the
+// expression before it: with an operator (...rest is the next element,
+// not a member), or with else.
+func continues(t string) bool {
+	return strings.IndexByte(continuesBefore, t[0]) >= 0 && !strings.HasPrefix(t, "...") || isWord(t, "else")
+}
+
+// nextContinues reports whether the next line of code goes on with the
+// statement of a definition indented by base: it starts with an operator
+// or with else, or, where statements end without a semicolon (noSemi), it
+// is indented more than the definition, as the lines of a statement are
+// and the next statement isn't.
+func nextContinues(lines []string, j, base int, noSemi bool) bool {
+	k, t := nextCode(lines, j, false)
+	return k >= 0 && (continues(t) || noSemi && indentOf(lines[k]) > base)
+}
+
+// goesOnAfterBlock reports whether a definition indented by base goes on
+// after a {…} that closed on line j, with rest after it on the line. It
+// doesn't when a statement ends or another block opens in rest. It does
+// when the header went on after the block (Foo<{ N }>, more than a comma)
+// and the next line starts the body or more of it ({, where). Where statements end without
+// a semicolon (noSemi), it also does on a next line that is indented
+// more, that closes the generics the block was in (>), or that starts
+// with an operator; after a comma, though, a line that isn't indented
+// more is the next element.
+func goesOnAfterBlock(lines []string, j, base int, rest string, noSemi bool) bool {
+	if strings.ContainsAny(rest, "{;") {
+		return false
+	}
+	k, t := nextCode(lines, j, false)
+	if k < 0 {
+		return false
+	}
+	comma := strings.Contains(rest, ",")
+	if noSemi && (indentOf(lines[k]) > base || t[0] == '>' || !comma && t[0] != ',' && continues(t)) {
+		return true
+	}
+	return strings.Trim(rest, " \t,") != "" && (t[0] == '{' || isWord(t, "where"))
+}
+
+// restCode is the code in the rest of a line, from byte k of its part si.
+func restCode(line string, segs []seg, si, k int) string {
+	var b strings.Builder
+	for ; si < len(segs); si, k = si+1, -1 {
+		if sg := segs[si]; sg.kind == code {
+			b.WriteString(line[max(k, sg.from):sg.to])
+		}
+	}
+	return b.String()
+}
+
+// inside reports whether a line can be within the brackets of a
+// definition indented by base: it is indented more, closes a bracket, or
+// has no code.
+func inside(line string, base int) bool {
+	t := strings.TrimSpace(line)
+	return t == "" || indentOf(line) > base || strings.IndexByte(")]}>", t[0]) >= 0 ||
+		strings.HasPrefix(t, "//") || strings.HasPrefix(t, "/*") || strings.HasPrefix(t, "*")
 }
 
 // indentEnd: the block ends before the next non-blank line that is

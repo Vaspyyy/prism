@@ -106,7 +106,8 @@ Things the work so far turned up that belong to a later step:
 - **glint**: `-A -M` orders children of equal size differently between runs, and files over 4 MiB show 0 lines (line counting stops at that size). In workspace maps, a loose folder too big to open counts its glance line twice against the budget.
 - **crux** mention suggestions can still match a function name shared across packages (two `New`s) on text alone; ruling that out needs a repo-wide index.
 - **outline** takes a call that ends its line with `{` for a method in JavaScript and TypeScript (`runPromise(Effect.gen(function*() {` becomes a method `runPromise`), because the method rule only looks at the shape of the line.
-- **outline** still gives one line to a definition whose block is inside a call's parentheses (`static TABLE: LazyLock<T> = LazyLock::new(|| {`, `class Account extends Aggregate("Account", {`), and to a Go type whose type parameters hold a struct or interface that spans lines with no block after it (`type T[P struct {…}] int`).
+- **outline** reads a JSX closing tag after an expression as the start of a regular expression (`<T render={<b>{x}</b>} />`), loses the brace after it and runs the function on into the next one. Eight functions in one React project.
+- **outline** gives one line to a TypeScript declaration without a body that spans lines (an overload's `export function make<` … `): Event<Tag>`), and ends a C++ constructor before its body when its initialiser list has braces on several lines (`: a{1}` / `, b{2}` / `{`).
 
 Fixed since v1:
 
@@ -115,7 +116,12 @@ Fixed since v1:
   - a `{…}` in a type was taken for the body: `func f() interface{} {`, `map[string]struct{}`, `function f(): { ok: boolean } {`, `Promise<{ … }> => {`, `<T extends { id: string }>`, `-> Vec<{ N }>`. The signature stopped at that brace too (`export function View(props:`);
   - a value without a block and without a semicolon (`fun name(): String = id`, `const abs = (n) => (n < 0 ? -n : n)`, `type ID int`) ran on into the next block that wasn't a definition, such as Kotlin's `companion object {`, and became the parent of what was in it;
   - a block that closes and opens again on one line ended the definition (`} catch (e: E) {`, `} else {` in a Kotlin function with an expression body);
-  - parentheses around an arrow function or the object it returns hid the body (`= (() => {`, `=> ({`).
+  - parentheses around an arrow function or the object it returns hid the body (`= (() => {`, `=> ({`);
+  - a statement that goes on below a block ended at that block: `<T extends { id: string }>(` with the parameters on the next lines, a union's `| { … }` lines, `Resource<…, { … }, never>`, a chain's `.map { … }`. Where semicolons are optional, a definition now goes on while the next line is indented more than it;
+  - a definition whose block is inside a call's parentheses got one line when the call held another definition or ran past 30 lines (`= Effect.gen(function* () {`, `LazyLock::new(|| {`, `class Account extends Aggregate("Account", {`), and so did a table of more than 30 lines;
+  - a declaration without a block inside a macro's braces ran on into the next block.
+
+  Checked against the TypeScript parser, 91.6% of the TypeScript and JavaScript definitions in those projects ended on the right line before and 99.9% do now; none that was right is wrong.
 - **A Kotlin `enum class Mode` was named `class`**, and so were its members (`class.label`); `fun interface Check` was a function named `interface`, `inner class` a method, and `operator fun` and `abstract fun` weren't found (Prism 0.9.0).
 
 - **Ordinals differed between seek and the other tools** when a definition sat inside a docstring or template string. outline now drops definitions inside text that spans lines, and `outline.Multiline` gives seek the same classification (Prism 0.8.0, seek 0.5.0).
