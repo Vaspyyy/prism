@@ -101,7 +101,7 @@ Things the work so far turned up that belong to a later step:
 - **crux** doesn't parse `go vet`'s type-check errors (`vet: path:line:col: message`); they show as plain output lines, without a location or `in` line.
 - **crux reruns**: a Go test that failed in its own body reruns its passing subtests without a caveat (testcmd only knows the subtests go printed). crux counts a parent test that only printed `t.Log` output as failing on its own, because go's plain output can't tell a log from an error; the rerun then takes the whole parent, with a caveat. A pytest rerun of a parametrized rerun gives no further rerun line.
 - **testcmd** is over-cautious with cargo: a crate whose sources start an item with `#[path` or `include!(` anywhere, test fixtures included, gets no command, and `--workspace` caveats count every package under the workspace root.
-- **seek** has no agent skill (`skill/SKILL.md`), unlike glint, recap and crux, so agents only learn its ref mode from the README. Its README GIF still shows a range that includes the doc comment.
+- **seek**'s README GIF still shows a range that includes the doc comment.
 - **report** gaps left after Phase 2: a moved definition in a new file can't say its signature changed (`RecapDef` has no `old_sig`), and `last_commit.commits` in glint is 1 unless `-H` asked for the count (it should be left out instead). seek passes a file kind `long lines` that the docs don't list. recap's note on special files is only in `notes`; `RecapFile` has no field for it.
 - **glint**: `-A -M` orders children of equal size differently between runs, and files over 4 MiB show 0 lines (line counting stops at that size). In workspace maps, a loose folder too big to open counts its glance line twice against the budget.
 - **crux** mention suggestions can still match a function name shared across packages (two `New`s) on text alone; ruling that out needs a repo-wide index.
@@ -109,6 +109,8 @@ Things the work so far turned up that belong to a later step:
 - **outline** reads a JSX closing tag after an expression as the start of a regular expression (`<T render={<b>{x}</b>} />`), loses the brace after it and runs the function on into the next one. Eight functions in one React project.
 - **outline** gives one line to a TypeScript declaration without a body that spans lines (an overload's `export function make<` … `): Event<Tag>`), and ends a C++ constructor before its body when its initialiser list has braces on several lines (`: a{1}` / `, b{2}` / `{`).
 - **outline** doesn't know Kotlin names in backticks: a test named ``fun `a handler is called once`() {`` isn't a definition, an extension ``fun Handler.`debug`(`` is named `Handler`, and an apostrophe in such a name (`` `each handler's callback runs` ``) is read as the start of a character, which ends the class around it early. Kotlin tests are often named this way, so crux and seek can't name them.
+- **outline** can't tell a continuation from a statement that is indented too far where a name can be an operator (Kotlin, Scala): `fun a() = 1` with a call indented more on the next line takes that line too. JavaScript and TypeScript end there, because two values can't meet at a line break. An `else` on a line of its own that looks further out than its definition only because tabs and blanks mix (the definition after tabs, the `else` after blanks) isn't taken for the definition's, and neither is a Kotlin `constructor` after an annotation whose arguments span lines.
+- **outline** doesn't read Scala 3 without braces (`object M:` with its members indented): the object ends on its second line.
 
 Fixed since v1:
 
@@ -118,11 +120,12 @@ Fixed since v1:
   - a value without a block and without a semicolon (`fun name(): String = id`, `const abs = (n) => (n < 0 ? -n : n)`, `type ID int`) ran on into the next block that wasn't a definition, such as Kotlin's `companion object {`, and became the parent of what was in it;
   - a block that closes and opens again on one line ended the definition (`} catch (e: E) {`, `} else {` in a Kotlin function with an expression body);
   - parentheses around an arrow function or the object it returns hid the body (`= (() => {`, `=> ({`);
-  - a statement that goes on below a block ended at that block: `<T extends { id: string }>(` with the parameters on the next lines, a union's `| { … }` lines, `Resource<…, { … }, never>`, a chain's `.map { … }`. Where semicolons are optional, a definition now goes on while the next line is indented more than it;
+  - a statement that goes on below a block ended at that block: `<T extends { id: string }>(` with the parameters on the next lines, a union's `| { … }` lines, `Resource<…, { … }, never>`, a chain's `.map { … }`. Where a statement can go on without an operator at the break (JavaScript, TypeScript, Kotlin, Scala), a definition goes on while the next line is indented more than it and doesn't start a statement, and in JavaScript and TypeScript not where two values would meet at the break;
   - a definition whose block is inside a call's parentheses got one line when the call held another definition or ran past 30 lines (`= Effect.gen(function* () {`, `LazyLock::new(|| {`, `class Account extends Aggregate("Account", {`), and so did a table of more than 30 lines;
   - a declaration without a block inside a macro's braces ran on into the next block.
 
   Checked against the TypeScript parser, 91.6% of the TypeScript and JavaScript definitions in those projects ended on the right line before and 99.9% do now; none that was right is wrong.
+  Three reviews of the change found what it broke in turn (a Rust `impl` header that ends in a blank or goes on, an indented next statement, a JSX element without parentheses around it, a braceless `if` in a Kotlin expression body, a comment in a KDoc comment) and two inputs that took quadratic time; `outline/review_test.go` has a case for each.
 - **A Kotlin `enum class Mode` was named `class`**, and so were its members (`class.label`); `fun interface Check` was a function named `interface`, `inner class` a method, and `operator fun` and `abstract fun` weren't found (Prism 0.9.0).
 
 - **Ordinals differed between seek and the other tools** when a definition sat inside a docstring or template string. outline now drops definitions inside text that spans lines, and `outline.Multiline` gives seek the same classification (Prism 0.8.0, seek 0.5.0).
@@ -130,6 +133,9 @@ Fixed since v1:
 - **recap hung on a symlink to a FIFO or device.** It now reads symlinks as git stores them and leaves special files out, and `outline.Read` never follows a symlink or blocks (Prism 0.8.0, recap 0.4.1).
 - **glint didn't mark repositories nested in a folder it lists** (`glint -A ~/Projekte`). It now loads scoped, lock-free context for the projects the map opens up (glint 0.10.0).
 - **glint** had a data race in directory listing that CI's race detector caught (glint#5).
+- **glint hung on a named pipe** called like a file it reads (`go.mod`, `main.go`, a README) or behind a symlink: 164 of 1026 probed runs never came back. It now reads regular files only, without waiting (glint 0.10.1).
+- **A seek search without hits was its most expensive one**: looking for similar names took every core for seconds (3.3 s and 21 s of CPU in 4,700 Rust files). It compares each name once and keeps only the ones alike: 0.4 s (seek 0.5.1).
+- **seek had no agent skill**, unlike glint, recap and crux. `skill/SKILL.md` covers its refs, context marks and `next:` lines (seek 0.5.1).
 - **v0.6.3** of Prism was tagged on the wrong commit (the same code as v0.6.2) and is retracted in go.mod; v0.6.4 is that release.
 
 ## Decisions taken
