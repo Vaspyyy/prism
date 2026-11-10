@@ -108,6 +108,7 @@ Things the work so far turned up that belong to a later step:
 - **outline** takes a call that ends its line with `{` for a method in JavaScript and TypeScript (`runPromise(Effect.gen(function*() {` becomes a method `runPromise`), because the method rule only looks at the shape of the line.
 - **outline** reads a JSX closing tag after an expression as the start of a regular expression (`<T render={<b>{x}</b>} />`), loses the brace after it and runs the function on into the next one. Eight functions in one React project.
 - **outline** gives one line to a TypeScript declaration without a body that spans lines (an overload's `export function make<` … `): Event<Tag>`), and ends a C++ constructor before its body when its initialiser list has braces on several lines (`: a{1}` / `, b{2}` / `{`).
+- **outline** doesn't know Kotlin names in backticks: a test named ``fun `a handler is called once`() {`` isn't a definition, an extension ``fun Handler.`debug`(`` is named `Handler`, and an apostrophe in such a name (`` `each handler's callback runs` ``) is read as the start of a character, which ends the class around it early. Kotlin tests are often named this way, so crux and seek can't name them.
 
 Fixed since v1:
 
